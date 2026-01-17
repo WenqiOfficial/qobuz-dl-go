@@ -17,22 +17,37 @@ type TrackURLResponse struct {
 }
 
 type TrackMetadata struct {
-	ID                  int    `json:"id"`
-	Title               string `json:"title"`
-	Version             string `json:"version"`
-	Duration            int    `json:"duration"`
-	TrackNumber         int    `json:"track_number"`
-	MediaNumber         int    `json:"media_number"`
-	MaximumBitDepth     int    `json:"maximum_bit_depth"`
+	ID                  int     `json:"id"`
+	Title               string  `json:"title"`
+	Version             string  `json:"version"`
+	Duration            int     `json:"duration"`
+	TrackNumber         int     `json:"track_number"`
+	MediaNumber         int     `json:"media_number"`
+	MaximumBitDepth     int     `json:"maximum_bit_depth"`
 	MaximumSamplingRate float64 `json:"maximum_sampling_rate"`
 	Performer           struct {
 		Name string `json:"name"`
 	} `json:"performer"`
-	Album struct {
-		ID     string `json:"id"`
-		Title  string `json:"title"`
-		Artist struct {
-			Name string `json:"name"`
-		} `json:"artist"`
-	} `json:"album"`
+	Album *AlbumMetadata `json:"album"`
+}
+
+type AlbumMetadata struct {
+	ID     string `json:"id"`
+	Title  string `json:"title"`
+	Artist struct {
+		Name string `json:"name"`
+	} `json:"artist"`
+	Tracks struct {
+		Items []TrackMetadata `json:"items"`
+	} `json:"tracks"`
+	Duration int `json:"duration"`
+	Image    struct {
+		Small string `json:"small"`
+		Large string `json:"large"`
+	} `json:"image"`
+	Genre *struct {
+		Name string `json:"name"`
+	} `json:"genre"`
+	ReleaseDateOrg    string `json:"release_date_original"`
+	ReleaseDateStream string `json:"release_date_stream"`
 }

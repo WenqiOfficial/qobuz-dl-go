@@ -1,53 +1,118 @@
 package api
 
 import (
+	"encoding/base64"
 	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/imroc/req/v3"
 )
 
 var (
-	bundleURLRegex = regexp.MustCompile(`<script src="(/resources/\d+\.\d+\.\d+-[a-z]\d{3}/bundle\.js)"></script>`)
-	appIDRegex     = regexp.MustCompile(`production:{api:{appId:"(?P<app_id>\d{9})",appSecret:"(?P<app_secret>\w{32})"`)
-	// Note: The python regex for AppID was slightly different, checking it again.
-	// Python: r'production:{api:{appId:"(?P<app_id>\d{9})",appSecret:"\w{32}"'
-	// It didn't capture secret?
-	// But Client needs secret.
-	// Let's assume we can capture it.
+	bundleURLRegex    = regexp.MustCompile(`<script src="(/resources/\d+\.\d+\.\d+-[a-z]\d{3}/bundle\.js)"></script>`)
+	appIDRegex        = regexp.MustCompile(`production:{api:{appId:"(?P<app_id>\d{9})",appSecret:"\w{32}"`)
+	seedTimezoneRegex = regexp.MustCompile(`[a-z]\.initialSeed\("(?P<seed>[\w=]+)",window\.utimezone\.(?P<timezone>[a-z]+)\)`)
+	infoExtrasRegex   = regexp.MustCompile(`name:"\w+/(?P<timezone>[a-zA-Z]+)",info:"(?P<info>[\w=]+)",extras:"(?P<extras>[\w=]+)"`)
 )
 
 // FetchSecrets attempts to scrape the AppID and potential secrets from the Qobuz web player.
-func FetchSecrets() (string, string, error) {
+func FetchSecrets() (string, []string, error) {
 	client := req.NewClient()
-	
+
 	// 1. Get Login Page to find bundle URL
 	resp, err := client.R().Get("https://play.qobuz.com/login")
 	if err != nil {
-		return "", "", err
+		return "", nil, err
 	}
-	
+
 	matches := bundleURLRegex.FindStringSubmatch(resp.String())
 	if len(matches) < 2 {
-		return "", "", fmt.Errorf("bundle URL not found")
+		return "", nil, fmt.Errorf("bundle URL not found")
 	}
 	bundlePath := matches[1]
-	
+
 	// 2. Get Bundle JS
 	resp, err = client.R().Get("https://play.qobuz.com" + bundlePath)
 	if err != nil {
-		return "", "", err
+		return "", nil, err
 	}
-	
-	// 3. Extract IDs
-	// The regex needs to be robust. 
-	// AppID is usually 9 digits. Secret is 32 chars.
-	// Regex: appId:"(\d{9})",appSecret:"(\w{32})"
-	re := regexp.MustCompile(`appId:"(\d{9})",appSecret:"(\w{32})"`)
-	secrets := re.FindStringSubmatch(resp.String())
-	if len(secrets) < 3 {
-		return "", "", fmt.Errorf("secrets not found in bundle")
+	bundleContent := resp.String()
+
+	// 3. Extract App ID
+	appIDMatches := appIDRegex.FindStringSubmatch(bundleContent)
+	if len(appIDMatches) < 2 {
+		return "", nil, fmt.Errorf("app ID not found in bundle")
 	}
-	
-	return secrets[1], secrets[2], nil
+	appID := appIDMatches[1]
+
+	// 4. Extract Secrets
+	// Logic ported from bundle.py
+	// a. Find seeds and timezones
+	seedMatches := seedTimezoneRegex.FindAllStringSubmatch(bundleContent, -1)
+
+	secretsMap := make(map[string][]string) // timezone -> [seed]
+	var timezones []string
+
+	for _, m := range seedMatches {
+		if len(m) < 3 {
+			continue
+		}
+		seed := m[1]
+		timezone := m[2]
+		secretsMap[timezone] = []string{seed}
+		timezones = append(timezones, timezone)
+	}
+
+	// b. Find info and extras
+	// bundle.py constructs a regex joining capitalized timezones.
+	// We just scan all and match against our map.
+	infoMatches := infoExtrasRegex.FindAllStringSubmatch(bundleContent, -1)
+
+	for _, m := range infoMatches {
+		if len(m) < 4 {
+			continue
+		}
+		// m[1] is timezone (Capitalized usually, like Berlin)
+		tzCap := m[1]
+		info := m[2]
+		extras := m[3]
+
+		tzLower := strings.ToLower(tzCap)
+		if list, ok := secretsMap[tzLower]; ok {
+			secretsMap[tzLower] = append(list, info, extras)
+		}
+	}
+
+	var validSecrets []string
+	for _, parts := range secretsMap {
+		if len(parts) != 3 {
+			// Needs seed, info, extras
+			continue
+		}
+		seed, info, extras := parts[0], parts[1], parts[2]
+		combined := seed + info + extras
+
+		if len(combined) <= 44 {
+			continue
+		}
+		// Python logic: base64.standard_b64decode("".join(secrets[secret_pair])[:-44])
+		// Slice BEFORE decoding
+		toDecode := combined[:len(combined)-44]
+
+		decodedBytes, err := base64.StdEncoding.DecodeString(toDecode)
+		if err != nil {
+			fmt.Printf("Base64 decode failed for %s: %v\n", parts[0], err)
+			continue
+		}
+
+		secret := string(decodedBytes)
+		validSecrets = append(validSecrets, secret)
+	}
+
+	if len(validSecrets) == 0 {
+		return appID, nil, fmt.Errorf("no valid secrets extracted")
+	}
+
+	return appID, validSecrets, nil
 }

@@ -3,6 +3,7 @@ module qobuz-dl-go
 go 1.25.5
 
 require (
+	github.com/bogem/id3v2/v2 v2.1.4
 	github.com/go-flac/go-flac v1.0.0
 	github.com/imroc/req/v3 v3.57.0
 	github.com/labstack/echo/v4 v4.15.0

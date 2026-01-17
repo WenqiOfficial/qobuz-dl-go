@@ -36,20 +36,14 @@ func Start(eng *engine.Engine, port string) {
 			}
 		}
 
-		// Set headers for streaming audio
-		c.Response().Header().Set(echo.HeaderContentType, "audio/flac")
-		c.Response().Header().Set(echo.HeaderContentDisposition, fmt.Sprintf("attachment; filename=\"%s.flac\"", trackID))
-
-		// Flush headers to client immediately
-		c.Response().WriteHeader(http.StatusOK)
-
-		// Create a writer wrapper
-		// Note: Echo's Response() implements io.Writer
-		err := eng.StreamTrack(c.Request().Context(), trackID, quality, c.Response().Writer, nil)
+		// Stream track - headers will be set based on actual response
+		streamInfo, err := eng.StreamTrack(c.Request().Context(), trackID, quality, c.Response().Writer, nil)
 		if err != nil {
-			// Since we already sent 200 OK, we can't send error status code.
-			// We can only log error.
-			// In a real app we might want to check metadata first before sending 200.
+			// If streaming failed before any data was sent, return error
+			if streamInfo == nil {
+				return c.String(http.StatusInternalServerError, fmt.Sprintf("Stream error: %v", err))
+			}
+			// Otherwise log it (data may have been partially sent)
 			fmt.Printf("Stream error: %v\n", err)
 			return nil
 		}

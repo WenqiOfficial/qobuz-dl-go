@@ -96,6 +96,20 @@ func (c *Client) Login(email, password string) (*LoginResponse, error) {
 	return &result, nil
 }
 
+// ValidateSecret checks if the current AppSecret is valid by testing the API.
+// Returns true if the secret works, false otherwise.
+func (c *Client) ValidateSecret() bool {
+	if c.AppSecret == "" {
+		return false
+	}
+	// Test track ID: Daft Punk - Technologic (public track for validation)
+	testTrackID := "5966783"
+	formatID := 5 // MP3 quality for quick validation
+
+	_, err := c.GetTrackURL(testTrackID, formatID)
+	return err == nil
+}
+
 // FindValidSecret iterates through potential secrets and finds one that works.
 // It validates each secret by attempting to sign a request for a known test track.
 // Returns the first valid secret found, or an error if none are valid.

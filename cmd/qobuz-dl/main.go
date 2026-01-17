@@ -33,7 +33,7 @@ var (
 
 func main() {
 	var rootCmd = &cobra.Command{
-		Use:     "qobuz-dl",
+		Use:     "qobuz-dl-go",
 		Short:   "A high performance Qobuz music downloader",
 		Long:    `A Go implementation of the Qobuz downloader with dual-mode support (CLI & Web).`,
 		Version: version.Short(),
@@ -155,10 +155,8 @@ func setupClient(isServer bool) (*api.Client, error) {
 
 	// 2. Resolve Proxy
 	// Priority: Flag > Config(future) > Env(handled by req)
-	// We only have Flag for now
-	// If needed we can check config.Proxy here
 
-	// 3. Resolve App Secrets
+	// 3. Get App ID (without validation yet - need user token first)
 	appID := flagAppID
 	appSecret := flagAppSecret
 
@@ -170,42 +168,24 @@ func setupClient(isServer bool) (*api.Client, error) {
 		appSecret = acc.AppSecret
 	}
 
-	// If still empty, fetch dynamically
-	if appID == "" || appSecret == "" {
-		fmt.Println("App ID/Secret missing. Fetching from Qobuz...")
-		var secrets []string
-		var err error
+	// If appID is missing, fetch it (but don't validate secret yet)
+	needSecretValidation := false
+	if appID == "" {
+		fmt.Println("App ID missing. Fetching from Qobuz...")
 		fetchedID, secrets, err := api.FetchSecrets(flagProxy)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch secrets: %w", err)
 		}
-
-		// Create temp client to verify secrets
-		// Note: We need to use the fetched ID
-		tempClient := api.NewClient(fetchedID, "")
-		if flagProxy != "" {
-			tempClient.SetProxy(flagProxy)
-		}
-
-		fmt.Printf("Testing %d secrets for AppID: %s...\n", len(secrets), fetchedID)
-		validSecret, err := tempClient.FindValidSecret(secrets)
-		if err != nil {
-			return nil, fmt.Errorf("no valid secret found: %w", err)
-		}
-
-		fmt.Println("Valid secret found!")
 		appID = fetchedID
-		appSecret = validSecret
-
-		// Save if allowed
-		if !flagNoSave {
-			acc.AppID = appID
-			acc.AppSecret = appSecret
-			_ = config.SaveAccount(acc)
-		}
+		// Store secrets for later validation after login
+		acc.PendingSecrets = secrets
+		needSecretValidation = true
+	} else if appSecret == "" {
+		// Have appID but no secret
+		needSecretValidation = true
 	}
 
-	// 4. Create Client
+	// 4. Create Client with current appID/appSecret
 	client := api.NewClient(appID, appSecret)
 	if flagProxy != "" {
 		if err := client.SetProxy(flagProxy); err != nil {
@@ -213,7 +193,7 @@ func setupClient(isServer bool) (*api.Client, error) {
 		}
 	}
 
-	// 5. Resolve User Auth
+	// 5. Resolve User Auth FIRST (needed for secret validation)
 	userToken := flagToken
 	if userToken == "" && acc.UserToken != "" {
 		userToken = acc.UserToken
@@ -221,72 +201,107 @@ func setupClient(isServer bool) (*api.Client, error) {
 
 	if userToken != "" {
 		client.SetUserToken(userToken)
-		return client, nil
-	}
-
-	// If no token, try login with Email/Pass
-	email := flagEmail
-	pass := flagPassword
-
-	// If flags missing, check account
-	if email == "" {
-		email = acc.Email
-	}
-	if pass == "" {
-		pass = acc.Password
-	}
-
-	// If still missing and we are interactive (CLI), ask user
-	// Check if simple CLI mode (not server or maybe server needs it too?)
-	// For server, we usually don't block on stdin unless it's initial setup.
-	// We'll ask if stdin is available.
-	if email == "" || pass == "" {
-		if !isServer { // Only prompt in DL mode for now to avoid blocking background services
-			fmt.Println("Authentication required.")
-			reader := bufio.NewReader(os.Stdin)
-
-			if email == "" {
-				fmt.Print("Email: ")
-				email, _ = reader.ReadString('\n')
-				email = strings.TrimSpace(email)
-			}
-
-			if pass == "" {
-				fmt.Print("Password: ")
-				pass, _ = reader.ReadString('\n')
-				pass = strings.TrimSpace(pass)
-			}
-		}
-	}
-
-	if email != "" && pass != "" {
-		fmt.Println("Logging in...")
-		resp, err := client.Login(email, pass)
-		if err != nil {
-			return nil, fmt.Errorf("login failed: %w", err)
-		}
-
-		// Save if allowed
-		if !flagNoSave {
-			acc.Email = email
-			// acc.Password = pass // Saving plaintext password is risky, maybe skip or ask user?
-			// User asked for "using account.json" for next time.
-			// Ideally we assume yes.
-			acc.Password = pass
-			acc.UserToken = resp.UserAuthToken
-			acc.UserID = resp.User.ID
-			if err := config.SaveAccount(acc); err != nil {
-				fmt.Printf("Warning: Failed to save account: %v\n", err)
-			} else {
-				fmt.Println("Account credentials saved.")
-			}
-		}
 	} else {
-		// No credentials found
-		if isServer {
-			fmt.Println("Warning: Starting server without user authentication. Some features may fail.")
-		} else {
+		// Need to login first
+		email := flagEmail
+		pass := flagPassword
+
+		if email == "" {
+			email = acc.Email
+		}
+		if pass == "" {
+			pass = acc.Password
+		}
+
+		if email == "" || pass == "" {
+			if !isServer {
+				fmt.Println("Authentication required.")
+				reader := bufio.NewReader(os.Stdin)
+
+				if email == "" {
+					fmt.Print("Email: ")
+					email, _ = reader.ReadString('\n')
+					email = strings.TrimSpace(email)
+				}
+
+				if pass == "" {
+					fmt.Print("Password: ")
+					pass, _ = reader.ReadString('\n')
+					pass = strings.TrimSpace(pass)
+				}
+			}
+		}
+
+		if email != "" && pass != "" {
+			fmt.Println("Logging in...")
+			resp, err := client.Login(email, pass)
+			if err != nil {
+				return nil, fmt.Errorf("login failed: %w", err)
+			}
+
+			userToken = resp.UserAuthToken
+
+			// Save credentials
+			if !flagNoSave {
+				acc.Email = email
+				acc.Password = pass
+				acc.UserToken = resp.UserAuthToken
+				acc.UserID = resp.User.ID
+			}
+		} else if !isServer {
 			return nil, fmt.Errorf("authentication required. Provide --token or --email/--password")
+		} else {
+			fmt.Println("Warning: Starting server without user authentication. Some features may fail.")
+		}
+	}
+
+	// 6. NOW validate/find secret (after we have user token)
+	if needSecretValidation || (appSecret != "" && !client.ValidateSecret()) {
+		if appSecret != "" {
+			fmt.Println("Saved secret is invalid. Refreshing...")
+		}
+
+		// Get fresh secrets if we don't have pending ones
+		secrets := acc.PendingSecrets
+		if len(secrets) == 0 {
+			fmt.Println("Fetching secrets from Qobuz...")
+			fetchedID, fetchedSecrets, err := api.FetchSecrets(flagProxy)
+			if err != nil {
+				return nil, fmt.Errorf("failed to fetch secrets: %w", err)
+			}
+			appID = fetchedID
+			secrets = fetchedSecrets
+			client = api.NewClient(appID, "")
+			if flagProxy != "" {
+				client.SetProxy(flagProxy)
+			}
+			if userToken != "" {
+				client.SetUserToken(userToken)
+			}
+		}
+
+		fmt.Printf("Testing %d secrets for AppID: %s...\n", len(secrets), appID)
+		validSecret, err := client.FindValidSecret(secrets)
+		if err != nil {
+			return nil, fmt.Errorf("no valid secret found: %w", err)
+		}
+
+		fmt.Println("Valid secret found!")
+		appSecret = validSecret
+		client.AppSecret = appSecret
+
+		// Clear pending secrets
+		acc.PendingSecrets = nil
+	}
+
+	// 7. Save account
+	if !flagNoSave {
+		acc.AppID = appID
+		acc.AppSecret = appSecret
+		if err := config.SaveAccount(acc); err != nil {
+			fmt.Printf("Warning: Failed to save account: %v\n", err)
+		} else if needSecretValidation {
+			fmt.Println("Credentials saved.")
 		}
 	}
 

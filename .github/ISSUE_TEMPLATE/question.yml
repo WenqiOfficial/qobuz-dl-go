@@ -1,0 +1,33 @@
+name: ❓ Question
+description: Ask a question about usage or development
+title: "[Question] "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        有问题？我们很乐意帮助！
+        Have a question? We're happy to help!
+
+  - type: textarea
+    id: question
+    attributes:
+      label: 问题 / Question
+      description: 你的问题是什么？
+      placeholder: 请问如何...
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: 背景 / Context
+      description: 提供一些背景信息帮助理解问题
+      placeholder: 我在尝试...的时候遇到了困惑
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: 已尝试 / What I've Tried
+      description: 你已经尝试过什么？
+      placeholder: 我已经尝试了...

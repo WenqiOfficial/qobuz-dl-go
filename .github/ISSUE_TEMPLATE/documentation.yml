@@ -1,0 +1,39 @@
+name: 📖 Documentation
+description: Report documentation issues or suggest improvements
+title: "[Docs] "
+labels: ["documentation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        帮助我们改进文档！
+        Help us improve the documentation!
+
+  - type: dropdown
+    id: doc-type
+    attributes:
+      label: 文档类型 / Documentation Type
+      options:
+        - README
+        - README_EN (English)
+        - Code Comments
+        - Wiki
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: issue
+    attributes:
+      label: 问题描述 / Issue Description
+      description: 描述文档的问题或不清楚的地方
+      placeholder: 文档中关于...的部分不太清楚
+    validations:
+      required: true
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: 建议修改 / Suggested Changes
+      description: 你建议如何修改？
+      placeholder: 建议改为...

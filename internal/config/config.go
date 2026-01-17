@@ -5,6 +5,7 @@ package config
 import (
 	"encoding/json"
 	"os"
+	"path/filepath"
 )
 
 // Config holds application-level settings.
@@ -18,22 +19,33 @@ type Config struct {
 
 // Account holds user authentication credentials.
 type Account struct {
-	Email     string `json:"email"`
-	Password  string `json:"password"` // Note: stored in plaintext, consider encrypting
-	UserToken string `json:"user_auth_token"`
-	AppID     string `json:"app_id"`
-	AppSecret string `json:"app_secret"`
-	UserID    int    `json:"user_id"`
+	Email          string   `json:"email"`
+	Password       string   `json:"password"` // Note: stored in plaintext, consider encrypting
+	UserToken      string   `json:"user_auth_token"`
+	AppID          string   `json:"app_id"`
+	AppSecret      string   `json:"app_secret"`
+	UserID         int      `json:"user_id"`
+	PendingSecrets []string `json:"-"` // Temporary storage, not persisted to disk
+}
+
+// getExeDir returns the directory where the executable is located.
+// This ensures config files are always relative to the application, not the working directory.
+func getExeDir() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "." // Fallback to current directory
+	}
+	return filepath.Dir(exe)
 }
 
 // GetConfigPath returns the path to the configuration file.
 func GetConfigPath() string {
-	return "config.json"
+	return filepath.Join(getExeDir(), "config.json")
 }
 
 // GetAccountPath returns the path to the account credentials file.
 func GetAccountPath() string {
-	return "account.json"
+	return filepath.Join(getExeDir(), "account.json")
 }
 
 // LoadConfig loads the configuration from disk.

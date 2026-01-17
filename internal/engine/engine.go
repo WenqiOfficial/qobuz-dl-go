@@ -117,12 +117,27 @@ func getDisplayConfig() displayConfig {
 
 // runeWidth returns the display width of a rune (CJK = 2, others = 1).
 func runeWidth(r rune) int {
-	if r >= 0x4E00 && r <= 0x9FFF || // CJK Unified Ideographs
-		r >= 0x3400 && r <= 0x4DBF || // CJK Extension A
+	// CJK characters and fullwidth forms take 2 columns
+	if r >= 0x1100 && r <= 0x115F || // Hangul Jamo
+		r >= 0x2E80 && r <= 0x9FFF || // CJK ranges (including radicals, ideographs)
+		r >= 0xA960 && r <= 0xA97F || // Hangul Jamo Extended-A
+		r >= 0xAC00 && r <= 0xD7FF || // Hangul Syllables + Jamo Extended-B
 		r >= 0xF900 && r <= 0xFAFF || // CJK Compatibility Ideographs
-		r >= 0xFF00 && r <= 0xFFEF || // Fullwidth Forms
-		r >= 0x3000 && r <= 0x303F { // CJK Symbols
+		r >= 0xFE10 && r <= 0xFE1F || // Vertical Forms
+		r >= 0xFE30 && r <= 0xFE6F || // CJK Compatibility Forms
+		r >= 0xFF00 && r <= 0xFF60 || // Fullwidth ASCII
+		r >= 0xFFE0 && r <= 0xFFE6 || // Fullwidth symbols
+		r >= 0x20000 && r <= 0x2FFFF || // CJK Extension B-F
+		r >= 0x30000 && r <= 0x3FFFF { // CJK Extension G+
 		return 2
+	}
+	// Control characters and zero-width
+	if r < 0x20 || r == 0x7F || // Control chars
+		r >= 0x200B && r <= 0x200F || // Zero-width chars
+		r >= 0x2028 && r <= 0x202E || // Line/paragraph separators
+		r >= 0xFE00 && r <= 0xFE0F || // Variation Selectors
+		r == 0xFEFF { // BOM
+		return 0
 	}
 	return 1
 }
@@ -136,31 +151,56 @@ func stringDisplayWidth(s string) int {
 	return width
 }
 
-// padRight pads a string to a fixed display width.
-func padRight(s string, width int) string {
+// padRight pads a string to a fixed display width using spaces.
+// Handles CJK and other wide characters correctly.
+func padRight(s string, targetWidth int) string {
 	currentWidth := stringDisplayWidth(s)
-	if currentWidth >= width {
-		return truncateToWidth(s, width)
+	if currentWidth >= targetWidth {
+		return truncateToWidth(s, targetWidth)
 	}
-	return s + strings.Repeat(" ", width-currentWidth)
+	// Fill remaining space with spaces
+	return s + strings.Repeat(" ", targetWidth-currentWidth)
+}
+
+// padLeft pads a string to a fixed display width with leading spaces.
+func padLeft(s string, targetWidth int) string {
+	currentWidth := stringDisplayWidth(s)
+	if currentWidth >= targetWidth {
+		return truncateToWidth(s, targetWidth)
+	}
+	return strings.Repeat(" ", targetWidth-currentWidth) + s
 }
 
 // truncateToWidth truncates a string to fit within a display width.
+// Adds "..." suffix if truncation occurs.
 func truncateToWidth(s string, maxWidth int) string {
-	if maxWidth <= 3 {
-		return "..."[:maxWidth]
+	if maxWidth <= 0 {
+		return ""
 	}
-	currentWidth := 0
-	result := []rune{}
+	if maxWidth <= 3 {
+		return strings.Repeat(".", maxWidth)
+	}
+
+	currentWidth := stringDisplayWidth(s)
+	if currentWidth <= maxWidth {
+		return s
+	}
+
+	// Need to truncate
+	targetWidth := maxWidth - 3 // Reserve space for "..."
+	width := 0
+	var result []rune
+
 	for _, r := range s {
 		w := runeWidth(r)
-		if currentWidth+w > maxWidth-3 {
-			return string(result) + "..."
+		if width+w > targetWidth {
+			break
 		}
 		result = append(result, r)
-		currentWidth += w
+		width += w
 	}
-	return string(result)
+
+	return string(result) + "..."
 }
 
 // printBox prints a nicely formatted box with proper alignment.
@@ -249,69 +289,72 @@ func (d *displayState) renderFinal(content string) {
 
 // buildThreadLine builds a single thread status line with fixed width.
 func buildThreadLine(workerID int, songName string, progress int, isWorking bool, width int) string {
-	// Format: "  Thread N: [songname        ] [####----] NNN%"
-	// Or:     "  Thread N: Idle"
+	// Layout: "  Thread N: " (fixed 12) + songName (variable) + " " + bar (12) + " " + percent (4)
+	// Example: "  Thread 1: Song Name Here      [####----] 100%"
 
-	prefix := fmt.Sprintf("  Thread %d: ", workerID+1)
-	prefixWidth := len(prefix) // ASCII only, so len() is fine
+	// Fixed widths
+	const prefixFmt = "  Thread %d: "
+	prefix := fmt.Sprintf(prefixFmt, workerID+1)
+	prefixWidth := len(prefix) // ASCII only
 
 	if !isWorking {
-		line := prefix + "Idle"
-		// Pad to full width
-		padding := width - len(line)
-		if padding > 0 {
-			line += strings.Repeat(" ", padding)
+		// Idle state: fill rest with spaces for consistent width
+		idleText := "Idle"
+		remaining := width - prefixWidth - len(idleText)
+		if remaining < 0 {
+			remaining = 0
 		}
-		return line
+		return prefix + idleText + strings.Repeat(" ", remaining)
 	}
 
-	// Working: show song name + progress bar + percentage
-	// Layout: prefix(12) + songName(28) + space(1) + bar(12) + space(1) + percent(4) = ~58
-	barWidth := 12
-	percentWidth := 5                                              // " 100%"
-	songWidth := width - prefixWidth - barWidth - percentWidth - 3 // 3 for spaces
+	// Working state layout
+	const barWidth = 12    // [##########]
+	const percentWidth = 5 // " 100%"
+	const spacing = 2      // spaces between elements
+	songWidth := width - prefixWidth - barWidth - percentWidth - spacing
 
-	if songWidth < 10 {
-		songWidth = 10
+	if songWidth < 8 {
+		songWidth = 8
 	}
 
-	truncatedName := truncateToWidth(songName, songWidth)
-	paddedName := padRight(truncatedName, songWidth)
+	// Build components with exact widths
+	songPadded := padRight(songName, songWidth)
 	bar := makeProgressBar(progress, barWidth)
+	percentStr := fmt.Sprintf("%4d%%", progress) // Right-aligned percentage
 
-	return fmt.Sprintf("%s%s %s %3d%%", prefix, paddedName, bar, progress)
+	return prefix + songPadded + " " + bar + percentStr
 }
 
 // buildSongLine builds a single song status line with fixed width.
 func buildSongLine(songName string, status TrackStatus, progress int, width int) string {
-	// Format: "  [songname                    ] Status"
+	// Layout: "  " + songName (variable) + "  " + status (fixed 10)
+	// Example: "  01. Song Name Here              v Complete"
 
-	statusWidth := 12                    // "v Complete" or "x Failed" or "o Queued" or "> NNN%"
-	songWidth := width - 4 - statusWidth // 4 = "  " prefix + "  " between
+	const statusWidth = 10 // "v Complete" or "x Failed  " etc.
+	const margins = 4      // "  " prefix + "  " separator
+	songWidth := width - margins - statusWidth
 
 	if songWidth < 10 {
 		songWidth = 10
 	}
 
-	truncatedName := truncateToWidth(songName, songWidth)
-	paddedName := padRight(truncatedName, songWidth)
+	songPadded := padRight(songName, songWidth)
 
 	var statusStr string
 	switch status {
 	case StatusQueued:
-		statusStr = "o Queued"
+		statusStr = "o Queued  "
 	case StatusDownloading:
-		statusStr = fmt.Sprintf("> %3d%%", progress)
+		statusStr = fmt.Sprintf("> %3d%%    ", progress)
 	case StatusComplete:
 		statusStr = "v Complete"
 	case StatusFailed:
-		statusStr = "x Failed"
+		statusStr = "x Failed  "
+	default:
+		statusStr = "  Unknown "
 	}
 
-	// Pad status to fixed width
-	statusStr = padRight(statusStr, statusWidth)
-
-	return fmt.Sprintf("  %s  %s", paddedName, statusStr)
+	return "  " + songPadded + "  " + statusStr
 }
 
 // buildDisplayContent builds the entire display content as a string.

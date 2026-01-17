@@ -23,17 +23,21 @@ Examples:
   .\build.ps1 -Release     # Release build with version from VERSION file
   .\build.ps1 -All         # Build for all platforms
   .\build.ps1 -Release -All # Release build for all platforms
+
+Output Structure:
+  release/
+    v0.1.0/
+      windows-amd64/
+        qobuz-dl-go.exe
+      linux-amd64/
+        qobuz-dl-go
+      darwin-arm64/
+        qobuz-dl-go
 "@
     exit 0
 }
 
 $ErrorActionPreference = "Stop"
-
-# Ensure release directory exists
-$releaseDir = "release"
-if (-not (Test-Path $releaseDir)) {
-    New-Item -ItemType Directory -Path $releaseDir | Out-Null
-}
 
 # Get build info
 $timestamp = Get-Date -Format "yyyyMMdd-HHmm"
@@ -56,12 +60,12 @@ try {
     $gitCommit = "unknown"
 }
 
-# Determine version tag for filename
+# Determine version tag
 if ($Release) {
     $versionTag = "v$version"
     $buildVersion = $version
 } else {
-    $versionTag = $timestamp
+    $versionTag = "dev-$timestamp"
     $buildVersion = "dev-$timestamp"
 }
 
@@ -78,7 +82,13 @@ function Build-Platform {
         [string]$Ext
     )
     
-    $outputName = "$releaseDir/${baseName}-${versionTag}-${GOOS}-${GOARCH}${Ext}"
+    # Create output directory: release/v0.1.0/windows-amd64/
+    $platformDir = "release/$versionTag/$GOOS-$GOARCH"
+    if (-not (Test-Path $platformDir)) {
+        New-Item -ItemType Directory -Path $platformDir -Force | Out-Null
+    }
+    
+    $outputName = "$platformDir/${baseName}${Ext}"
     
     Write-Host "Building for $GOOS/$GOARCH -> $outputName" -ForegroundColor Cyan
     
@@ -105,12 +115,22 @@ Write-Host ""
 if ($All) {
     # Build for multiple platforms
     Build-Platform -GOOS "windows" -GOARCH "amd64" -Ext ".exe"
+    Build-Platform -GOOS "windows" -GOARCH "arm64" -Ext ".exe"
     Build-Platform -GOOS "linux" -GOARCH "amd64" -Ext ""
+    Build-Platform -GOOS "linux" -GOARCH "arm64" -Ext ""
     Build-Platform -GOOS "darwin" -GOARCH "amd64" -Ext ""
     Build-Platform -GOOS "darwin" -GOARCH "arm64" -Ext ""
+    
+    Write-Host ""
+    Write-Host "Output directory: release/$versionTag/" -ForegroundColor Green
 } else {
     # Build for current platform (Windows)
-    $outputName = "$releaseDir/${baseName}-${versionTag}-windows-amd64.exe"
+    $platformDir = "release/$versionTag/windows-amd64"
+    if (-not (Test-Path $platformDir)) {
+        New-Item -ItemType Directory -Path $platformDir -Force | Out-Null
+    }
+    
+    $outputName = "$platformDir/${baseName}.exe"
     
     Write-Host "Building -> $outputName" -ForegroundColor Cyan
     

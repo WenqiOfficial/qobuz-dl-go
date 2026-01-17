@@ -1,5 +1,7 @@
 # Qobuz-DL Go
 
+[English](README_EN.md) | **中文**
+
 [![Go Version](https://img.shields.io/github/go-mod/go-version/WenqiOfficial/qobuz-dl-go?style=flat-square)](https://go.dev/)
 [![Release](https://img.shields.io/github/v/release/WenqiOfficial/qobuz-dl-go?style=flat-square&color=blue)](https://github.com/WenqiOfficial/qobuz-dl-go/releases/latest)
 [![License](https://img.shields.io/github/license/WenqiOfficial/qobuz-dl-go?style=flat-square)](LICENSE)
@@ -43,7 +45,7 @@
 2.  整理依赖并构建：
     ```bash
     go mod tidy
-    go build -o qobuz-dl.exe ./cmd/qobuz-dl
+    go build -o qobuz-dl-go ./cmd/qobuz-dl
     ```
 
 ## 📖 使用指南
@@ -54,10 +56,10 @@
 
 ```bash
 # 下载专辑
-./qobuz-dl dl https://play.qobuz.com/album/j3wq4jjuhznjb
+./qobuz-dl-go dl https://play.qobuz.com/album/j3wq4jjuhznjb
 
 # 下载单曲
-./qobuz-dl dl https://play.qobuz.com/track/123456
+./qobuz-dl-go dl https://play.qobuz.com/track/123456
 ```
 
 ### 2. 身份验证
@@ -69,12 +71,12 @@
 
 **命令行参数登录**：
 ```bash
-./qobuz-dl dl <url> --email your@email.com --password yourpassword
+./qobuz-dl-go dl <url> --email your@email.com --password yourpassword
 ```
 
 **使用 Token 登录**：
 ```bash
-./qobuz-dl dl <url> --token <user-auth-token>
+./qobuz-dl-go dl <url> --token <user-auth-token>
 ```
 
 ### 3. 下载质量
@@ -88,7 +90,7 @@
 
 ```bash
 # 下载最高音质
-./qobuz-dl dl <url> -q 27
+./qobuz-dl-go dl <url> -q 27
 ```
 
 ### 4. 代理设置
@@ -99,10 +101,10 @@
 
 ```bash
 # HTTP 代理
-./qobuz-dl dl <url> --proxy http://127.0.0.1:7890
+./qobuz-dl-go dl <url> --proxy http://127.0.0.1:7890
 
 # SOCKS5 代理
-./qobuz-dl dl <url> --proxy socks5://127.0.0.1:1080
+./qobuz-dl-go dl <url> --proxy socks5://127.0.0.1:1080
 ```
 
 ### 5. 其他选项
@@ -148,10 +150,10 @@
 
 请确保在提交代码前运行 `go fmt` 以保持代码风格一致。
 
-## 📜 许可证
-
-本项目采用 GPL v3 许可证。详情请参阅 [LICENSE](LICENSE) 文件。
-
 ## ⭐ Star
 
 [![Star History Chart](https://api.star-history.com/svg?repos=WenqiOfficial/qobuz-dl-go&type=date&legend=top-left)](https://www.star-history.com/#WenqiOfficial/qobuz-dl-go&type=date&legend=top-left)
+
+## 📜 许可证
+
+本项目采用 GPL v3 许可证。详情请参阅 [LICENSE](LICENSE) 文件。

@@ -65,6 +65,20 @@ func sanitizeFilename(name string) string {
 	return name
 }
 
+// getFileExtensionFromMimeType returns the appropriate file extension based on MIME type.
+// This uses the actual format returned by the server, which is more accurate than the requested quality.
+func getFileExtensionFromMimeType(mimeType string) string {
+	switch mimeType {
+	case "audio/mpeg":
+		return ".mp3"
+	case "audio/flac":
+		return ".flac"
+	default:
+		// Default to flac for unknown types
+		return ".flac"
+	}
+}
+
 // trackTask represents a single track download task.
 type trackTask struct {
 	Track     api.TrackMetadata
@@ -449,23 +463,30 @@ func (e *Engine) DownloadAlbum(ctx context.Context, albumID string, quality int,
 	fmt.Println()
 
 	// 4. Build task queue
+	// Note: We'll determine actual file extension when we get the URL response from server
 	var tasks []trackTask
 	skipped := 0
 	for i, track := range album.Tracks.Items {
-		trackFileName := sanitizeFilename(fmt.Sprintf("%02d. %s", track.TrackNumber, track.Title)) + ".flac"
-		trackPath := filepath.Join(albumDir, trackFileName)
+		// Use base name without extension for skip check - check both .flac and .mp3
+		baseName := sanitizeFilename(fmt.Sprintf("%02d. %s", track.TrackNumber, track.Title))
+		flacPath := filepath.Join(albumDir, baseName+".flac")
+		mp3Path := filepath.Join(albumDir, baseName+".mp3")
 
-		// Check if already exists
-		if _, err := os.Stat(trackPath); err == nil {
+		// Check if already exists (either format)
+		if _, err := os.Stat(flacPath); err == nil {
+			skipped++
+			continue
+		}
+		if _, err := os.Stat(mp3Path); err == nil {
 			skipped++
 			continue
 		}
 
+		// FileName stores base name; actual extension determined at download time
 		tasks = append(tasks, trackTask{
-			Track:     track,
-			TrackPath: trackPath,
-			FileName:  trackFileName,
-			Index:     i + 1,
+			Track:    track,
+			FileName: baseName,
+			Index:    i + 1,
 		})
 	}
 
@@ -556,8 +577,12 @@ func (e *Engine) DownloadAlbum(ctx context.Context, albumID string, quality int,
 					continue
 				}
 
+				// Determine actual file extension from server response
+				ext := getFileExtensionFromMimeType(urlInfo.MimeType)
+				trackPath := filepath.Join(albumDir, task.FileName+ext)
+
 				// Download with progress callback
-				err = e.downloadFileWithProgress(ctx, urlInfo.URL, task.TrackPath, func(percent int) {
+				err = e.downloadFileWithProgress(ctx, urlInfo.URL, trackPath, func(percent int) {
 					stateMu.Lock()
 					threadProgress[workerID] = percent
 					trackStates[taskIdx].Progress = percent
@@ -574,7 +599,7 @@ func (e *Engine) DownloadAlbum(ctx context.Context, albumID string, quality int,
 
 				// Tag the file
 				track := task.Track
-				_ = e.Tagger.WriteTags(task.TrackPath, &track, album, coverData)
+				_ = e.Tagger.WriteTags(trackPath, &track, album, coverData)
 
 				// Update state: complete
 				stateMu.Lock()
@@ -715,8 +740,9 @@ func (e *Engine) DownloadTrack(ctx context.Context, trackID string, quality int,
 	}
 
 	// 3. Prepare Directory & Filename
-	// For single tracks, use format: "Artist - Title.flac"
-	fileName := sanitizeFilename(fmt.Sprintf("%s - %s", track.Performer.Name, track.Title)) + ".flac"
+	// Use server-returned MimeType for accurate file extension
+	ext := getFileExtensionFromMimeType(info.MimeType)
+	fileName := sanitizeFilename(fmt.Sprintf("%s - %s", track.Performer.Name, track.Title)) + ext
 	outputPath := filepath.Join(outputDir, fileName)
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return err
@@ -752,12 +778,22 @@ func (e *Engine) DownloadTrack(ctx context.Context, trackID string, quality int,
 	return nil
 }
 
+// StreamInfo contains information about the stream for setting HTTP headers.
+type StreamInfo struct {
+	MimeType string
+}
+
 // StreamTrack streams the track data to the provided writer.
-func (e *Engine) StreamTrack(ctx context.Context, trackID string, quality int, w io.Writer, onProgress ProgressCallback) error {
+// Returns StreamInfo with the actual MIME type from the server.
+func (e *Engine) StreamTrack(ctx context.Context, trackID string, quality int, w io.Writer, onProgress ProgressCallback) (*StreamInfo, error) {
 	// 1. Get Track URL
 	info, err := e.Client.GetTrackURL(trackID, quality)
 	if err != nil {
-		return fmt.Errorf("failed to get track URL: %w", err)
+		return nil, fmt.Errorf("failed to get track URL: %w", err)
+	}
+
+	streamInfo := &StreamInfo{
+		MimeType: info.MimeType,
 	}
 
 	// 2. Start Download to Writer
@@ -772,12 +808,12 @@ func (e *Engine) StreamTrack(ctx context.Context, trackID string, quality int, w
 		Get(info.URL)
 
 	if err != nil {
-		return fmt.Errorf("stream request failed: %w", err)
+		return streamInfo, fmt.Errorf("stream request failed: %w", err)
 	}
 
 	if resp.IsErrorState() {
-		return fmt.Errorf("stream returned error: %s", resp.Status)
+		return streamInfo, fmt.Errorf("stream returned error: %s", resp.Status)
 	}
 
-	return nil
+	return streamInfo, nil
 }

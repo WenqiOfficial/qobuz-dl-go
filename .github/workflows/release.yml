@@ -1,0 +1,102 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}-${{ matrix.arch }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: windows
+            arch: amd64
+            ext: .exe
+          - os: windows
+            arch: arm64
+            ext: .exe
+          - os: linux
+            arch: amd64
+            ext: ''
+          - os: linux
+            arch: arm64
+            ext: ''
+          - os: darwin
+            arch: amd64
+            ext: ''
+          - os: darwin
+            arch: arm64
+            ext: ''
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Get version info
+        id: version
+        run: |
+          echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          echo "COMMIT=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+          echo "BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: 0
+        run: |
+          BINARY_NAME="qobuz-dl-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.ext }}"
+          go build -trimpath -ldflags "-s -w \
+            -X 'qobuz-dl-go/internal/version.Version=${{ steps.version.outputs.VERSION }}' \
+            -X 'qobuz-dl-go/internal/version.BuildTime=${{ steps.version.outputs.BUILD_TIME }}' \
+            -X 'qobuz-dl-go/internal/version.GitCommit=${{ steps.version.outputs.COMMIT }}'" \
+            -o "dist/${BINARY_NAME}" ./cmd/qobuz-dl
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: qobuz-dl-${{ matrix.os }}-${{ matrix.arch }}
+          path: dist/*
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create checksums
+        run: |
+          cd dist
+          sha256sum * > checksums.txt
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

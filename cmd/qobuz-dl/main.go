@@ -8,13 +8,12 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
-	"github.com/vbauerster/mpb/v8"
-	"github.com/vbauerster/mpb/v8/decor"
 
 	"qobuz-dl-go/internal/api"
 	"qobuz-dl-go/internal/config"
 	"qobuz-dl-go/internal/engine"
 	"qobuz-dl-go/internal/server"
+	"qobuz-dl-go/internal/version"
 )
 
 var (
@@ -29,14 +28,19 @@ var (
 	flagProxy     string
 	flagNoSave    bool
 	flagPort      string
+	flagThreads   int
 )
 
 func main() {
 	var rootCmd = &cobra.Command{
-		Use:   "qobuz-dl",
-		Short: "A high performance Qobuz music downloader",
-		Long:  `A Go implementation of the Qobuz downloader with dual-mode support (CLI & Web).`,
+		Use:     "qobuz-dl",
+		Short:   "A high performance Qobuz music downloader",
+		Long:    `A Go implementation of the Qobuz downloader with dual-mode support (CLI & Web).`,
+		Version: version.Short(),
 	}
+
+	// Custom version template
+	rootCmd.SetVersionTemplate(fmt.Sprintf("%s\n", version.Full()))
 
 	var serveCmd = &cobra.Command{
 		Use:   "serve",
@@ -82,6 +86,11 @@ func main() {
 			// Initialize Engine
 			eng := engine.New(client)
 
+			// Set concurrency if specified
+			if flagThreads > 0 {
+				eng.SetConcurrency(flagThreads)
+			}
+
 			// Default Output Dir from Config if not flagged
 			if flagOutputDir == "." {
 				// We could load config default here, but let's stick to current dir
@@ -95,34 +104,20 @@ func main() {
 					os.Exit(1)
 				}
 			} else {
-				// Track Download with Progress Bar
-				p := mpb.New(mpb.WithWidth(60))
-				bar := p.AddBar(0,
-					mpb.PrependDecorators(
-						decor.Name("downloading"),
-						decor.Percentage(decor.WCSyncSpace),
-					),
-					mpb.AppendDecorators(
-						decor.OnComplete(
-							decor.EwmaETA(decor.ET_STYLE_GO, 60), "done",
-						),
-					),
-				)
-
-				var totalSet bool
+				// Track Download with simple progress
+				fmt.Printf("Downloading track %s...\n", id)
 				err := eng.DownloadTrack(context.Background(), id, flagQuality, flagOutputDir, func(current, total int64) {
-					if !totalSet && total > 0 {
-						bar.SetTotal(total, false)
-						totalSet = true
+					if total > 0 {
+						percent := int(float64(current) / float64(total) * 100)
+						fmt.Printf("\r  Progress: %d%%", percent)
 					}
-					bar.SetCurrent(current)
 				})
 
 				if err != nil {
-					fmt.Printf("Download failed: %v\n", err)
+					fmt.Printf("\nDownload failed: %v\n", err)
 					os.Exit(1)
 				}
-				p.Wait()
+				fmt.Println("\n  Done!")
 			}
 
 			fmt.Println("Work complete!")
@@ -132,6 +127,7 @@ func main() {
 	// dlCmd Flags
 	dlCmd.Flags().IntVarP(&flagQuality, "quality", "q", 6, "Quality ID (5=MP3, 6=FLAC 16bit, 7=FLAC 24bit, 27=FLAC 24bit>96)")
 	dlCmd.Flags().StringVarP(&flagOutputDir, "output", "o", ".", "Output directory")
+	dlCmd.Flags().IntVarP(&flagThreads, "threads", "n", 3, "Number of concurrent download threads (1-10)")
 
 	rootCmd.AddCommand(dlCmd)
 	rootCmd.AddCommand(serveCmd)
@@ -142,7 +138,7 @@ func main() {
 	rootCmd.PersistentFlags().StringVarP(&flagEmail, "email", "e", "", "User Email")
 	rootCmd.PersistentFlags().StringVarP(&flagPassword, "password", "p", "", "User Password")
 	rootCmd.PersistentFlags().StringVarP(&flagToken, "token", "t", "", "User Auth Token")
-	rootCmd.PersistentFlags().StringVar(&flagProxy, "proxy", "", "Proxy URL (http/https/socks5)")
+	rootCmd.PersistentFlags().StringVar(&flagProxy, "proxy", "", "Proxy URL (http/https/socks5), overrides HTTP_PROXY/HTTPS_PROXY env")
 	rootCmd.PersistentFlags().BoolVar(&flagNoSave, "nosave", false, "Do not save credentials to account.json")
 
 	if err := rootCmd.Execute(); err != nil {
@@ -179,7 +175,7 @@ func setupClient(isServer bool) (*api.Client, error) {
 		fmt.Println("App ID/Secret missing. Fetching from Qobuz...")
 		var secrets []string
 		var err error
-		fetchedID, secrets, err := api.FetchSecrets()
+		fetchedID, secrets, err := api.FetchSecrets(flagProxy)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch secrets: %w", err)
 		}

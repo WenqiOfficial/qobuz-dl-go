@@ -5,13 +5,15 @@ import (
 	"regexp"
 )
 
-var (
-	urlRegex = regexp.MustCompile(`(?:https:\/\/(?:w{3}|open|play)\.qobuz\.com)?(?:\/[a-z]{2}-[a-z]{2})?\/(album|artist|track|playlist|label)(?:\/[-\w\d]+)?\/([\w\d]+)`)
-)
+// urlRegex matches various Qobuz URL formats and extracts resource type and ID.
+// Supports: www.qobuz.com, open.qobuz.com, play.qobuz.com with optional locale prefix.
+var urlRegex = regexp.MustCompile(`(?:https:\/\/(?:w{3}|open|play)\.qobuz\.com)?` +
+	`(?:\/[a-z]{2}-[a-z]{2})?\/(album|artist|track|playlist|label)(?:\/[-\w\d]+)?\/([\w\d]+)`)
 
-// ResourceType represents the type of Qobuz resource
+// ResourceType represents the type of Qobuz resource (album, track, etc.).
 type ResourceType string
 
+// Supported Qobuz resource types.
 const (
 	TypeAlbum    ResourceType = "album"
 	TypeArtist   ResourceType = "artist"
@@ -21,19 +23,12 @@ const (
 )
 
 // ParseURL extracts the resource type and ID from a Qobuz URL.
-// If the input is just digits, it assumes it's a Track ID (or lets the caller decide).
-// But since CLI args are ambiguous, we should helper here.
-// However, the Python regex is strict.
+// Supports URLs from www.qobuz.com, open.qobuz.com, and play.qobuz.com.
+// Returns an error if the URL format is not recognized.
 func ParseURL(input string) (ResourceType, string, error) {
-	// 1. Try Regex
 	matches := urlRegex.FindStringSubmatch(input)
 	if len(matches) == 3 {
 		return ResourceType(matches[1]), matches[2], nil
 	}
-
-	// 2. If no match, check if it is raw digits.
-	// If raw digits, we default to Track? Or maybe the user has to specify.
-	// For now, if it's just digits, we assume it is the ID provided for the specific command context.
-	// But robustly, we only handle URL parsing here.
-	return "", "", fmt.Errorf("invalid Qobuz URL")
+	return "", "", fmt.Errorf("invalid Qobuz URL format")
 }

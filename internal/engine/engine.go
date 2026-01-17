@@ -1,35 +1,368 @@
+// Package engine provides the core download and processing functionality.
+// It orchestrates API calls, file downloads, and metadata tagging.
 package engine
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/imroc/req/v3"
 
 	"qobuz-dl-go/internal/api"
 )
 
+// Engine is the core download engine that coordinates API calls,
+// file downloads, and metadata tagging operations.
 type Engine struct {
-	Client *api.Client
-	Tagger *Tagger
+	Client      *api.Client
+	Tagger      *Tagger
+	Concurrency int // Number of concurrent downloads (default: 3)
 }
 
+// New creates a new Engine instance with the given API client.
 func New(client *api.Client) *Engine {
 	return &Engine{
-		Client: client,
-		Tagger: NewTagger(),
+		Client:      client,
+		Tagger:      NewTagger(),
+		Concurrency: 3, // Default concurrency
 	}
 }
 
-// ProgressCallback is called with the number of bytes read and the total size
+// SetConcurrency sets the number of concurrent download threads.
+func (e *Engine) SetConcurrency(n int) {
+	if n < 1 {
+		n = 1
+	}
+	if n > 10 {
+		n = 10 // Cap at 10 to avoid API rate limiting
+	}
+	e.Concurrency = n
+}
+
+// ProgressCallback is invoked during download with current bytes and total size.
 type ProgressCallback func(current, total int64)
 
-// DownloadAlbum downloads an entire album.
+// illegalCharsRegex matches characters that are not allowed in file/folder names.
+var illegalCharsRegex = regexp.MustCompile(`[<>:"/\\|?*\x00-\x1f]`)
+
+// sanitizeFilename removes or replaces characters that are illegal in file names.
+func sanitizeFilename(name string) string {
+	name = illegalCharsRegex.ReplaceAllString(name, "_")
+	name = strings.TrimSpace(name)
+	// Limit length to avoid path issues (Windows max path component is 255)
+	if len(name) > 200 {
+		name = name[:200]
+	}
+	return name
+}
+
+// trackTask represents a single track download task.
+type trackTask struct {
+	Track     api.TrackMetadata
+	TrackPath string
+	FileName  string
+	Index     int
+}
+
+// TrackStatus represents the download status of a track.
+type TrackStatus int
+
+const (
+	StatusQueued TrackStatus = iota
+	StatusDownloading
+	StatusComplete
+	StatusFailed
+)
+
+// trackState holds the current state of a track for display.
+type trackState struct {
+	FileName string
+	Status   TrackStatus
+	Progress int // 0-100
+}
+
+// displayConfig holds display configuration for cross-platform compatibility.
+type displayConfig struct {
+	Width        int  // Display width
+	UseANSI      bool // Whether ANSI escape codes are supported
+	MaxSongLines int  // Maximum song lines to display (0 = all)
+}
+
+// getDisplayConfig returns display configuration based on platform.
+func getDisplayConfig() displayConfig {
+	cfg := displayConfig{
+		Width:        70,
+		UseANSI:      true,
+		MaxSongLines: 0,
+	}
+
+	// Windows cmd.exe before Windows 10 may not support ANSI
+	// Most modern terminals support ANSI, so we default to true
+	// Users can set NO_COLOR or TERM=dumb to disable
+	if os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
+		cfg.UseANSI = false
+	}
+
+	return cfg
+}
+
+// runeWidth returns the display width of a rune (CJK = 2, others = 1).
+func runeWidth(r rune) int {
+	if r >= 0x4E00 && r <= 0x9FFF || // CJK Unified Ideographs
+		r >= 0x3400 && r <= 0x4DBF || // CJK Extension A
+		r >= 0xF900 && r <= 0xFAFF || // CJK Compatibility Ideographs
+		r >= 0xFF00 && r <= 0xFFEF || // Fullwidth Forms
+		r >= 0x3000 && r <= 0x303F { // CJK Symbols
+		return 2
+	}
+	return 1
+}
+
+// stringDisplayWidth calculates the display width of a string.
+func stringDisplayWidth(s string) int {
+	width := 0
+	for _, r := range s {
+		width += runeWidth(r)
+	}
+	return width
+}
+
+// padRight pads a string to a fixed display width.
+func padRight(s string, width int) string {
+	currentWidth := stringDisplayWidth(s)
+	if currentWidth >= width {
+		return truncateToWidth(s, width)
+	}
+	return s + strings.Repeat(" ", width-currentWidth)
+}
+
+// truncateToWidth truncates a string to fit within a display width.
+func truncateToWidth(s string, maxWidth int) string {
+	if maxWidth <= 3 {
+		return "..."[:maxWidth]
+	}
+	currentWidth := 0
+	result := []rune{}
+	for _, r := range s {
+		w := runeWidth(r)
+		if currentWidth+w > maxWidth-3 {
+			return string(result) + "..."
+		}
+		result = append(result, r)
+		currentWidth += w
+	}
+	return string(result)
+}
+
+// printBox prints a nicely formatted box with proper alignment.
+func printBox(lines []string, width int) {
+	border := strings.Repeat("═", width-2)
+	fmt.Printf("╔%s╗\n", border)
+	for _, line := range lines {
+		fmt.Printf("║ %s ║\n", padRight(line, width-4))
+	}
+	fmt.Printf("╚%s╝\n", border)
+}
+
+// makeProgressBar creates a text progress bar.
+func makeProgressBar(percent int, width int) string {
+	if percent < 0 {
+		percent = 0
+	}
+	if percent > 100 {
+		percent = 100
+	}
+	filled := width * percent / 100
+	empty := width - filled
+	return "[" + strings.Repeat("#", filled) + strings.Repeat("-", empty) + "]"
+}
+
+// displayState manages the terminal display state.
+type displayState struct {
+	buffer    bytes.Buffer
+	mu        sync.Mutex
+	config    displayConfig
+	lastLines int // Number of lines in last render
+}
+
+// newDisplayState creates a new display state.
+func newDisplayState() *displayState {
+	return &displayState{
+		config:    getDisplayConfig(),
+		lastLines: 0,
+	}
+}
+
+// clearAndRender clears previous output and renders new content.
+func (d *displayState) clearAndRender(content string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.buffer.Reset()
+
+	// Move cursor up and clear previous lines if ANSI supported
+	if d.config.UseANSI && d.lastLines > 0 {
+		// Move up N lines and clear each
+		for i := 0; i < d.lastLines; i++ {
+			d.buffer.WriteString("\033[A")  // Move up
+			d.buffer.WriteString("\033[2K") // Clear line
+		}
+	}
+
+	// Write new content
+	d.buffer.WriteString(content)
+
+	// Count new lines for next clear
+	d.lastLines = strings.Count(content, "\n")
+
+	// Output buffer atomically
+	fmt.Print(d.buffer.String())
+}
+
+// renderFinal renders final output without cursor manipulation.
+func (d *displayState) renderFinal(content string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// Clear previous display first
+	if d.config.UseANSI && d.lastLines > 0 {
+		var clearBuf bytes.Buffer
+		for i := 0; i < d.lastLines; i++ {
+			clearBuf.WriteString("\033[A")
+			clearBuf.WriteString("\033[2K")
+		}
+		fmt.Print(clearBuf.String())
+	}
+
+	fmt.Print(content)
+	d.lastLines = 0
+}
+
+// buildThreadLine builds a single thread status line with fixed width.
+func buildThreadLine(workerID int, songName string, progress int, isWorking bool, width int) string {
+	// Format: "  Thread N: [songname        ] [####----] NNN%"
+	// Or:     "  Thread N: Idle"
+
+	prefix := fmt.Sprintf("  Thread %d: ", workerID+1)
+	prefixWidth := len(prefix) // ASCII only, so len() is fine
+
+	if !isWorking {
+		line := prefix + "Idle"
+		// Pad to full width
+		padding := width - len(line)
+		if padding > 0 {
+			line += strings.Repeat(" ", padding)
+		}
+		return line
+	}
+
+	// Working: show song name + progress bar + percentage
+	// Layout: prefix(12) + songName(28) + space(1) + bar(12) + space(1) + percent(4) = ~58
+	barWidth := 12
+	percentWidth := 5                                              // " 100%"
+	songWidth := width - prefixWidth - barWidth - percentWidth - 3 // 3 for spaces
+
+	if songWidth < 10 {
+		songWidth = 10
+	}
+
+	truncatedName := truncateToWidth(songName, songWidth)
+	paddedName := padRight(truncatedName, songWidth)
+	bar := makeProgressBar(progress, barWidth)
+
+	return fmt.Sprintf("%s%s %s %3d%%", prefix, paddedName, bar, progress)
+}
+
+// buildSongLine builds a single song status line with fixed width.
+func buildSongLine(songName string, status TrackStatus, progress int, width int) string {
+	// Format: "  [songname                    ] Status"
+
+	statusWidth := 12                    // "v Complete" or "x Failed" or "o Queued" or "> NNN%"
+	songWidth := width - 4 - statusWidth // 4 = "  " prefix + "  " between
+
+	if songWidth < 10 {
+		songWidth = 10
+	}
+
+	truncatedName := truncateToWidth(songName, songWidth)
+	paddedName := padRight(truncatedName, songWidth)
+
+	var statusStr string
+	switch status {
+	case StatusQueued:
+		statusStr = "o Queued"
+	case StatusDownloading:
+		statusStr = fmt.Sprintf("> %3d%%", progress)
+	case StatusComplete:
+		statusStr = "v Complete"
+	case StatusFailed:
+		statusStr = "x Failed"
+	}
+
+	// Pad status to fixed width
+	statusStr = padRight(statusStr, statusWidth)
+
+	return fmt.Sprintf("  %s  %s", paddedName, statusStr)
+}
+
+// buildDisplayContent builds the entire display content as a string.
+func buildDisplayContent(
+	numWorkers int,
+	threadTasks []int,
+	threadProgress []int,
+	tasks []trackTask,
+	trackStates []trackState,
+	width int,
+) string {
+	var buf bytes.Buffer
+
+	separator := strings.Repeat("-", width)
+
+	// Thread Status Section
+	buf.WriteString(separator + "\n")
+	buf.WriteString("  THREAD STATUS\n")
+	buf.WriteString(separator + "\n")
+
+	for i := range numWorkers {
+		taskIdx := threadTasks[i]
+		isWorking := taskIdx >= 0 && taskIdx < len(tasks)
+
+		var songName string
+		var progress int
+		if isWorking {
+			songName = tasks[taskIdx].FileName
+			progress = threadProgress[i]
+		}
+
+		line := buildThreadLine(i, songName, progress, isWorking, width)
+		buf.WriteString(line + "\n")
+	}
+
+	// Song Status Section
+	buf.WriteString(separator + "\n")
+	buf.WriteString("  SONG STATUS\n")
+	buf.WriteString(separator + "\n")
+
+	for _, ts := range trackStates {
+		line := buildSongLine(ts.FileName, ts.Status, ts.Progress, width)
+		buf.WriteString(line + "\n")
+	}
+
+	buf.WriteString(separator + "\n")
+
+	return buf.String()
+}
+
+// DownloadAlbum downloads an entire album with concurrent workers and progress display.
 func (e *Engine) DownloadAlbum(ctx context.Context, albumID string, quality int, outputDir string) error {
 	// 1. Get Album Metadata
 	album, err := e.Client.GetAlbum(albumID)
@@ -37,64 +370,244 @@ func (e *Engine) DownloadAlbum(ctx context.Context, albumID string, quality int,
 		return fmt.Errorf("failed to get album metadata: %w", err)
 	}
 
-	fmt.Printf("Downloading Album: %s - %s (%d tracks)\n", album.Artist.Name, album.Title, len(album.Tracks.Items))
+	totalTracks := len(album.Tracks.Items)
+
+	// Print header with proper alignment
+	fmt.Println()
+	boxWidth := 74
+	headerLines := []string{
+		fmt.Sprintf("Album:  %s", truncateToWidth(album.Title, boxWidth-14)),
+		fmt.Sprintf("Artist: %s", truncateToWidth(album.Artist.Name, boxWidth-14)),
+		fmt.Sprintf("Tracks: %d", totalTracks),
+		fmt.Sprintf("Threads: %d", e.Concurrency),
+	}
+	printBox(headerLines, boxWidth)
+	fmt.Println()
 
 	// 2. Prepare Album Directory
-	// Sanitization needed here in real world
-	albumDir := filepath.Join(outputDir, fmt.Sprintf("%s - %s", album.Artist.Name, album.Title))
+	folderName := sanitizeFilename(fmt.Sprintf("%s - %s", album.Artist.Name, album.Title))
+	albumDir := filepath.Join(outputDir, folderName)
 	if err := os.MkdirAll(albumDir, 0755); err != nil {
 		return err
 	}
 
-	// 2.1 Download Cover Art
+	// 3. Download Cover Art first
 	var coverData []byte
 	if album.Image.Large != "" {
-		fmt.Println("Downloading Cover Art...")
+		fmt.Print("[Cover] Downloading... ")
 		coverData, err = e.downloadCover(album.Image.Large)
 		if err == nil {
 			_ = e.saveCoverFile(albumDir, coverData)
+			fmt.Println("Done")
 		} else {
-			fmt.Printf("Warning: Failed to download cover: %v\n", err)
+			fmt.Println("Failed (continuing without cover)")
 		}
 	}
+	fmt.Println()
 
-	// 3. Download Each Track
-	for _, track := range album.Tracks.Items {
-		// Use Track specific filename
-		trackFileName := fmt.Sprintf("%02d. %s.flac", track.TrackNumber, track.Title)
+	// 4. Build task queue
+	var tasks []trackTask
+	skipped := 0
+	for i, track := range album.Tracks.Items {
+		trackFileName := sanitizeFilename(fmt.Sprintf("%02d. %s", track.TrackNumber, track.Title)) + ".flac"
 		trackPath := filepath.Join(albumDir, trackFileName)
 
-		// Check if exists
+		// Check if already exists
 		if _, err := os.Stat(trackPath); err == nil {
-			fmt.Printf("Skipping %s (already exists)\n", trackFileName)
+			skipped++
 			continue
 		}
 
-		fmt.Printf("Downloading: %s...\n", trackFileName)
+		tasks = append(tasks, trackTask{
+			Track:     track,
+			TrackPath: trackPath,
+			FileName:  trackFileName,
+			Index:     i + 1,
+		})
+	}
 
-		// Get URL
-		urlInfo, err := e.Client.GetTrackURL(strconv.Itoa(track.ID), quality)
-		if err != nil {
-			fmt.Printf("Failed to get URL for track %s: %v\n", track.Title, err)
-			continue
-		}
+	if skipped > 0 {
+		fmt.Printf("[Skip] %d tracks already exist\n\n", skipped)
+	}
 
-		// Download
-		// We use the same logic as DownloadTrack but custom path
-		err = e.downloadFile(ctx, urlInfo.URL, trackPath, nil)
-		if err != nil {
-			fmt.Printf("Failed to download %s: %v\n", track.Title, err)
-			continue
-		}
+	if len(tasks) == 0 {
+		fmt.Println("[Done] All tracks already downloaded!")
+		return nil
+	}
 
-		// Tag
-		fmt.Printf("Tagging: %s...\n", trackFileName)
-		err = e.Tagger.WriteTags(trackPath, &track, album, coverData)
-		if err != nil {
-			fmt.Printf("Warning: Failed to write tags for %s: %v\n", track.Title, err)
+	// 5. Initialize track states for display
+	trackStates := make([]trackState, len(tasks))
+	for i, task := range tasks {
+		trackStates[i] = trackState{
+			FileName: task.FileName,
+			Status:   StatusQueued,
+			Progress: 0,
 		}
 	}
 
+	// Thread states: which song each thread is working on (-1 = rest)
+	threadTasks := make([]int, e.Concurrency) // index into tasks array, -1 = rest
+	threadProgress := make([]int, e.Concurrency)
+	for i := range threadTasks {
+		threadTasks[i] = -1
+	}
+
+	var stateMu sync.Mutex
+	numWorkers := e.Concurrency
+	if numWorkers > len(tasks) {
+		numWorkers = len(tasks)
+	}
+
+	// Initialize display state
+	display := newDisplayState()
+	displayWidth := display.config.Width
+
+	// 6. Start display goroutine
+	stopDisplay := make(chan struct{})
+	displayDone := make(chan struct{})
+
+	go func() {
+		defer close(displayDone)
+		ticker := time.NewTicker(150 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-stopDisplay:
+				return
+			case <-ticker.C:
+				stateMu.Lock()
+				content := buildDisplayContent(numWorkers, threadTasks, threadProgress, tasks, trackStates, displayWidth)
+				stateMu.Unlock()
+				display.clearAndRender(content)
+			}
+		}
+	}()
+
+	// 7. Create worker pool
+	taskChan := make(chan int, len(tasks)) // send task index
+	var wg sync.WaitGroup
+
+	for w := range numWorkers {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for taskIdx := range taskChan {
+				task := tasks[taskIdx]
+
+				// Update state: downloading
+				stateMu.Lock()
+				threadTasks[workerID] = taskIdx
+				threadProgress[workerID] = 0
+				trackStates[taskIdx].Status = StatusDownloading
+				trackStates[taskIdx].Progress = 0
+				stateMu.Unlock()
+
+				// Get track URL
+				urlInfo, err := e.Client.GetTrackURL(strconv.Itoa(task.Track.ID), quality)
+				if err != nil {
+					stateMu.Lock()
+					trackStates[taskIdx].Status = StatusFailed
+					threadTasks[workerID] = -1
+					stateMu.Unlock()
+					continue
+				}
+
+				// Download with progress callback
+				err = e.downloadFileWithProgress(ctx, urlInfo.URL, task.TrackPath, func(percent int) {
+					stateMu.Lock()
+					threadProgress[workerID] = percent
+					trackStates[taskIdx].Progress = percent
+					stateMu.Unlock()
+				})
+
+				if err != nil {
+					stateMu.Lock()
+					trackStates[taskIdx].Status = StatusFailed
+					threadTasks[workerID] = -1
+					stateMu.Unlock()
+					continue
+				}
+
+				// Tag the file
+				track := task.Track
+				_ = e.Tagger.WriteTags(task.TrackPath, &track, album, coverData)
+
+				// Update state: complete
+				stateMu.Lock()
+				trackStates[taskIdx].Status = StatusComplete
+				trackStates[taskIdx].Progress = 100
+				threadTasks[workerID] = -1
+				stateMu.Unlock()
+			}
+		}(w)
+	}
+
+	// Send tasks by index
+	for i := range tasks {
+		taskChan <- i
+	}
+	close(taskChan)
+
+	// Wait for completion
+	wg.Wait()
+	close(stopDisplay)
+	<-displayDone
+
+	// Render final status
+	stateMu.Lock()
+	finalContent := buildDisplayContent(numWorkers, threadTasks, threadProgress, tasks, trackStates, displayWidth)
+	stateMu.Unlock()
+	display.renderFinal(finalContent)
+
+	// Print summary
+	fmt.Println()
+	successCount := 0
+	failCount := 0
+	for _, ts := range trackStates {
+		if ts.Status == StatusComplete {
+			successCount++
+		} else if ts.Status == StatusFailed {
+			failCount++
+		}
+	}
+
+	summaryLines := []string{
+		"Download Complete!",
+		fmt.Sprintf("Success: %d  |  Failed: %d  |  Skipped: %d", successCount, failCount, skipped),
+	}
+	printBox(summaryLines, boxWidth)
+
+	return nil
+}
+
+// downloadFileWithProgress downloads a file and reports progress as percentage.
+func (e *Engine) downloadFileWithProgress(ctx context.Context, url, outputPath string, onProgress func(int)) error {
+	var contentLength int64 = 0
+
+	resp, err := e.Client.HTTP.R().
+		SetContext(ctx).
+		SetOutputFile(outputPath).
+		SetDownloadCallback(func(info req.DownloadInfo) {
+			if info.Response.ContentLength > 0 {
+				contentLength = info.Response.ContentLength
+				percent := int(float64(info.DownloadedSize) / float64(contentLength) * 100)
+				if percent > 100 {
+					percent = 100
+				}
+				if onProgress != nil {
+					onProgress(percent)
+				}
+			}
+		}).
+		Get(url)
+
+	if err != nil {
+		return err
+	}
+	if resp.IsErrorState() {
+		return fmt.Errorf("http error: %s", resp.Status)
+	}
 	return nil
 }
 
@@ -112,7 +625,7 @@ func (e *Engine) downloadFile(ctx context.Context, url, outputPath string, onPro
 	if err != nil {
 		return err
 	}
-	if resp.IsError() {
+	if resp.IsErrorState() {
 		return fmt.Errorf("http error: %s", resp.Status)
 	}
 	return nil
@@ -124,7 +637,7 @@ func (e *Engine) downloadCover(url string) ([]byte, error) {
 
 	// Try downloading max quality
 	resp, err := e.Client.HTTP.R().Get(maxUrl)
-	if err == nil && !resp.IsError() {
+	if err == nil && !resp.IsErrorState() {
 		return resp.Bytes(), nil
 	}
 
@@ -133,7 +646,7 @@ func (e *Engine) downloadCover(url string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if resp.IsError() {
+	if resp.IsErrorState() {
 		return nil, fmt.Errorf("http error: %s", resp.Status)
 	}
 	return resp.Bytes(), nil
@@ -146,41 +659,53 @@ func (e *Engine) saveCoverFile(dir string, data []byte) error {
 
 // DownloadTrack downloads a track by ID to a local file.
 func (e *Engine) DownloadTrack(ctx context.Context, trackID string, quality int, outputDir string, onProgress ProgressCallback) error {
-	// Need Track Metadata first for filename
-	// But Client.GetTrackURL doesn't return metadata
-	// We should fetch metadata first.
-	// HACK: Use GetAlbum for single track? No.
-	// Wait, we need a GetTrackMetadata method. But we don't have it implemented yet in Client.
-	// For now, let's just stick to ID filename, but wait, the user wants tags.
-	// If the user imports a Track ID, we MUST fetch metadata to tag it properly.
+	// 1. Fetch Track Metadata first
+	track, err := e.Client.GetTrack(trackID)
+	if err != nil {
+		return fmt.Errorf("failed to get track metadata: %w", err)
+	}
 
-	// Since we don't have GetTrackMetadata separately implemented in Client, let's implement it or stub it.
-	// Client.GetTrackURL only returns URL.
-	// We need `track/get`.
-
-	// Let's defer this specific "Tag Single Track" feature improvement for a moment or implement metadata fetching here.
-
-	// 1. Get Track URL
+	// 2. Fetch Track URL
 	info, err := e.Client.GetTrackURL(trackID, quality)
 	if err != nil {
 		return fmt.Errorf("failed to get track URL: %w", err)
 	}
 
-	// 2. Prepare Output File
-	fileName := fmt.Sprintf("%s.flac", trackID)
+	// 3. Prepare Directory & Filename
+	// For single tracks, use format: "Artist - Title.flac"
+	fileName := sanitizeFilename(fmt.Sprintf("%s - %s", track.Performer.Name, track.Title)) + ".flac"
 	outputPath := filepath.Join(outputDir, fileName)
-
 	if err := os.MkdirAll(outputDir, 0755); err != nil {
 		return err
 	}
 
+	// 4. Download Audio
 	err = e.downloadFile(ctx, info.URL, outputPath, onProgress)
 	if err != nil {
 		return err
 	}
 
-	// Tagging for single track requires extra API call.
-	// We'll skip for now if just ID provided, unless we add GetTrackMetadata to client.
+	// 5. Download Cover Art (if available)
+	var coverData []byte
+	if track.Album != nil && track.Album.Image.Large != "" {
+		coverData, _ = e.downloadCover(track.Album.Image.Large)
+	}
+
+	// 6. Tagging
+	// Note: TrackMetadata has 'Album' embedded usually if fetched via GetTrack
+	// But our model definition in models.go might need checking if GetTrack response structure embeds full album.
+	// API response usually embeds partial album info.
+	if track.Album == nil {
+		// Fallback create dummy album
+		track.Album = &api.AlbumMetadata{Title: "Unknown Album"}
+	}
+
+	err = e.Tagger.WriteTags(outputPath, track, track.Album, coverData)
+	if err != nil {
+		// Just warn, don't fail download
+		fmt.Printf("Warning: Failed to tag file: %v\n", err)
+	}
+
 	return nil
 }
 
@@ -207,7 +732,7 @@ func (e *Engine) StreamTrack(ctx context.Context, trackID string, quality int, w
 		return fmt.Errorf("stream request failed: %w", err)
 	}
 
-	if resp.IsError() {
+	if resp.IsErrorState() {
 		return fmt.Errorf("stream returned error: %s", resp.Status)
 	}
 

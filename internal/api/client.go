@@ -1,3 +1,5 @@
+// Package api provides the Qobuz API client and related utilities.
+// It handles authentication, request signing, and all API interactions.
 package api
 
 import (
@@ -5,24 +7,30 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"time"
 
 	"github.com/imroc/req/v3"
 )
 
+// API constants for Qobuz service.
 const (
 	BaseURL   = "https://www.qobuz.com/api.json/0.2/"
 	UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:83.0) Gecko/20100101 Firefox/83.0"
 )
 
+// Client is the Qobuz API client that handles all API requests.
+// It manages authentication state and request signing.
 type Client struct {
-	AppID     string
-	AppSecret string
-	UserToken string
-	HTTP      *req.Client
+	HTTP      *req.Client // HTTP client with configured defaults
+	AppID     string      // Application ID obtained from Qobuz web player
+	AppSecret string      // Application secret for request signing
+	UserToken string      // User authentication token
 }
 
+// NewClient creates a new Qobuz API client with the given credentials.
+// The client is configured with default headers and base URL.
 func NewClient(appID, appSecret string) *Client {
 	c := &Client{
 		AppID:     appID,
@@ -38,15 +46,26 @@ func NewClient(appID, appSecret string) *Client {
 	return c
 }
 
+// SetProxy configures the HTTP client to use the specified proxy URL.
+// Supports http, https, and socks5 schemes.
 func (c *Client) SetProxy(proxyURL string) error {
 	if proxyURL == "" {
 		return nil
+	}
+	// Validate URL format
+	parsed, err := url.Parse(proxyURL)
+	if err != nil {
+		return fmt.Errorf("invalid proxy URL: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" && parsed.Scheme != "socks5" {
+		return fmt.Errorf("unsupported proxy scheme: %s (use http, https, or socks5)", parsed.Scheme)
 	}
 	// req/v3 automatically handles http, https, socks5 if the scheme is provided
 	c.HTTP.SetProxyURL(proxyURL)
 	return nil
 }
 
+// SetUserToken sets the user authentication token for subsequent requests.
 func (c *Client) SetUserToken(token string) {
 	c.UserToken = token
 	c.HTTP.SetCommonHeader("X-User-Auth-Token", token)
@@ -68,7 +87,7 @@ func (c *Client) Login(email, password string) (*LoginResponse, error) {
 		return nil, err
 	}
 
-	if resp.IsError() {
+	if resp.IsErrorState() {
 		return nil, fmt.Errorf("login failed: %s", resp.String())
 	}
 
@@ -77,13 +96,13 @@ func (c *Client) Login(email, password string) (*LoginResponse, error) {
 	return &result, nil
 }
 
-// FindValidSecret iterates through a list of potential secrets and finds the one that works.
-// It does this by attempting to sign a request for a known public track.
+// FindValidSecret iterates through potential secrets and finds one that works.
+// It validates each secret by attempting to sign a request for a known test track.
+// Returns the first valid secret found, or an error if none are valid.
 func (c *Client) FindValidSecret(secrets []string) (string, error) {
-	// Test track ID from qopy.py (Daft Punk - Technologic approx?)
-	// qopy uses 5966783
+	// Test track ID: Daft Punk - Technologic (public track for validation)
 	testTrackID := "5966783"
-	formatID := 5 // MP3
+	formatID := 5 // MP3 quality for quick validation
 
 	for _, sec := range secrets {
 		// Temporary set secret
@@ -97,15 +116,17 @@ func (c *Client) FindValidSecret(secrets []string) (string, error) {
 		}
 	}
 
-	// Reset secret if none found
 	c.AppSecret = ""
 	return "", fmt.Errorf("no valid secret found in provided list")
 }
 
+// GetTrackURL retrieves the download URL for a track with the specified quality.
+// Quality IDs: 5=MP3, 6=FLAC 16-bit, 7=FLAC 24-bit ≤96kHz, 27=FLAC 24-bit >96kHz.
+// This endpoint requires a signed request using the app secret.
 func (c *Client) GetTrackURL(trackID string, formatID int) (*TrackURLResponse, error) {
 	ts := time.Now().Unix()
 
-	// Signature construction
+	// Build signature: concatenate endpoint, params, timestamp, and secret
 	rawSig := fmt.Sprintf("trackgetFileUrlformat_id%dintentstreamtrack_id%s%d%s",
 		formatID, trackID, ts, c.AppSecret)
 
@@ -130,15 +151,34 @@ func (c *Client) GetTrackURL(trackID string, formatID int) (*TrackURLResponse, e
 		return nil, err
 	}
 
-	if resp.IsError() {
+	if resp.IsErrorState() {
 		return nil, errors.New(resp.String())
 	}
 
 	return &result, nil
 }
 
+// GetTrack retrieves metadata for a single track by its ID.
+func (c *Client) GetTrack(trackID string) (*TrackMetadata, error) {
+	var result TrackMetadata
+	resp, err := c.HTTP.R().
+		SetQueryParam("track_id", trackID).
+		SetSuccessResult(&result).
+		Get("track/get")
+
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.IsErrorState() {
+		return nil, errors.New(resp.String())
+	}
+
+	return &result, nil
+}
+
+// GetAlbum retrieves metadata for an album by its ID, including all tracks.
 func (c *Client) GetAlbum(albumID string) (*AlbumMetadata, error) {
-	// album/get does not require signature, just app_id (which is in common header)
 	var result AlbumMetadata
 	resp, err := c.HTTP.R().
 		SetQueryParam("album_id", albumID).
@@ -149,7 +189,7 @@ func (c *Client) GetAlbum(albumID string) (*AlbumMetadata, error) {
 		return nil, err
 	}
 
-	if resp.IsError() {
+	if resp.IsErrorState() {
 		return nil, errors.New(resp.String())
 	}
 

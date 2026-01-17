@@ -1,3 +1,5 @@
+// Package server provides the web server for streaming and API access.
+// It uses Echo framework for HTTP handling.
 package server
 
 import (
@@ -10,10 +12,12 @@ import (
 	"github.com/labstack/echo/v4/middleware"
 )
 
+// Start initializes and starts the web server on the specified port.
+// It provides endpoints for health checks and audio streaming.
 func Start(eng *engine.Engine, port string) {
 	e := echo.New()
 	e.HideBanner = true
-	
+
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
 	e.Use(middleware.CORS())
@@ -35,7 +39,7 @@ func Start(eng *engine.Engine, port string) {
 		// Set headers for streaming audio
 		c.Response().Header().Set(echo.HeaderContentType, "audio/flac")
 		c.Response().Header().Set(echo.HeaderContentDisposition, fmt.Sprintf("attachment; filename=\"%s.flac\"", trackID))
-		
+
 		// Flush headers to client immediately
 		c.Response().WriteHeader(http.StatusOK)
 
@@ -44,12 +48,12 @@ func Start(eng *engine.Engine, port string) {
 		err := eng.StreamTrack(c.Request().Context(), trackID, quality, c.Response().Writer, nil)
 		if err != nil {
 			// Since we already sent 200 OK, we can't send error status code.
-			// We can only log error. 
+			// We can only log error.
 			// In a real app we might want to check metadata first before sending 200.
 			fmt.Printf("Stream error: %v\n", err)
 			return nil
 		}
-		
+
 		return nil
 	})
 

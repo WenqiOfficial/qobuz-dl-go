@@ -9,16 +9,27 @@ import (
 	"github.com/imroc/req/v3"
 )
 
+// Regular expressions for extracting secrets from Qobuz web player bundle.
 var (
-	bundleURLRegex    = regexp.MustCompile(`<script src="(/resources/\d+\.\d+\.\d+-[a-z]\d{3}/bundle\.js)"></script>`)
-	appIDRegex        = regexp.MustCompile(`production:{api:{appId:"(?P<app_id>\d{9})",appSecret:"\w{32}"`)
+	// bundleURLRegex finds the bundle.js URL in the login page.
+	bundleURLRegex = regexp.MustCompile(`<script src="(/resources/\d+\.\d+\.\d+-[a-z]\d{3}/bundle\.js)"></script>`)
+	// appIDRegex extracts the app ID from the bundle.
+	appIDRegex = regexp.MustCompile(`production:{api:{appId:"(?P<app_id>\d{9})",appSecret:"\w{32}"`)
+	// seedTimezoneRegex finds seed values paired with timezone names.
 	seedTimezoneRegex = regexp.MustCompile(`[a-z]\.initialSeed\("(?P<seed>[\w=]+)",window\.utimezone\.(?P<timezone>[a-z]+)\)`)
-	infoExtrasRegex   = regexp.MustCompile(`name:"\w+/(?P<timezone>[a-zA-Z]+)",info:"(?P<info>[\w=]+)",extras:"(?P<extras>[\w=]+)"`)
+	// infoExtrasRegex finds additional info and extras for secret construction.
+	infoExtrasRegex = regexp.MustCompile(`name:"\w+/(?P<timezone>[a-zA-Z]+)",info:"(?P<info>[\w=]+)",extras:"(?P<extras>[\w=]+)"`)
 )
 
-// FetchSecrets attempts to scrape the AppID and potential secrets from the Qobuz web player.
-func FetchSecrets() (string, []string, error) {
+// FetchSecrets scrapes the App ID and potential secrets from the Qobuz web player.
+// It fetches the login page, locates the bundle.js, and extracts credentials.
+// Returns the App ID, a list of potential secrets, and any error encountered.
+// proxyURL is optional; pass empty string to use direct connection.
+func FetchSecrets(proxyURL string) (string, []string, error) {
 	client := req.NewClient()
+	if proxyURL != "" {
+		client.SetProxyURL(proxyURL)
+	}
 
 	// 1. Get Login Page to find bundle URL
 	resp, err := client.R().Get("https://play.qobuz.com/login")

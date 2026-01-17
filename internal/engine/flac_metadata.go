@@ -1,3 +1,5 @@
+// flac_metadata.go provides low-level FLAC metadata block parsing and serialization.
+// It implements Vorbis Comment and Picture block structures per FLAC specification.
 package engine
 
 import (
@@ -7,21 +9,22 @@ import (
 	"io"
 )
 
-// VorbisComment represents a Vorbis Comment block
+// VorbisComment represents a FLAC Vorbis Comment metadata block.
+// It contains vendor info and key=value comment pairs.
 type VorbisComment struct {
-	Vendor   string
-	Comments []string
+	Vendor   string   // Vendor/encoder identification string
+	Comments []string // Comments in "KEY=VALUE" format
 }
 
-// NewVorbisComment creates a new VorbisComment with default vendor
+// NewVorbisComment creates a new VorbisComment with a default vendor string.
 func NewVorbisComment() *VorbisComment {
 	return &VorbisComment{
-		Vendor:   "reference libFLAC 1.3.4 20220220", // Standard vendor string example
+		Vendor:   "qobuz-dl-go 1.0.0",
 		Comments: []string{},
 	}
 }
 
-// ParseVorbisComment parses a raw Vorbis Comment block data
+// ParseVorbisComment parses a Vorbis Comment block from raw bytes.
 func ParseVorbisComment(data []byte) (*VorbisComment, error) {
 	buf := bytes.NewReader(data)
 
@@ -95,14 +98,14 @@ func (vc *VorbisComment) Add(key, value string) {
 
 // Picture Block
 type Picture struct {
-	PictureType uint32
 	MIME        string
 	Description string
+	ImageData   []byte
+	PictureType uint32
 	Width       uint32
 	Height      uint32
 	Depth       uint32
 	ColorCount  uint32
-	ImageData   []byte
 }
 
 const (

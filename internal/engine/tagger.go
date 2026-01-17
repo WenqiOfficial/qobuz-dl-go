@@ -1,3 +1,5 @@
+// tagger.go provides FLAC metadata tagging functionality.
+// It handles Vorbis Comments and Picture block embedding.
 package engine
 
 import (
@@ -9,14 +11,16 @@ import (
 	"github.com/go-flac/go-flac"
 )
 
-// Tagger handles metadata embedding
+// Tagger handles metadata embedding for FLAC files.
 type Tagger struct{}
 
+// NewTagger creates a new Tagger instance.
 func NewTagger() *Tagger {
 	return &Tagger{}
 }
 
-// WriteTags executes the tagging process on a FLAC file
+// WriteTags writes metadata tags and optional cover art to a FLAC file.
+// It creates or updates Vorbis Comments and adds a Picture block if cover data is provided.
 func (t *Tagger) WriteTags(filePath string, track *api.TrackMetadata, album *api.AlbumMetadata, coverData []byte) error {
 	f, err := flac.ParseFile(filePath)
 	if err != nil {

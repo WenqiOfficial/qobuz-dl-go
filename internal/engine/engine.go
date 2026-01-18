@@ -699,11 +699,27 @@ func (e *Engine) downloadFile(ctx context.Context, url, outputPath string, onPro
 	return nil
 }
 
+// Static CDN proxy for cover images
+const (
+	staticCDNProxy  = "https://static-qobuz.wenqi.icu"
+	staticQobuzHost = "https://static.qobuz.com"
+)
+
 func (e *Engine) downloadCover(url string) ([]byte, error) {
 	// Try maximum quality (original)
 	maxUrl := strings.Replace(url, "_600.", "_org.", 1)
 
-	// Try downloading max quality
+	// Try CDN proxy first if enabled
+	if e.Client.UseProxy {
+		cdnUrl := strings.Replace(maxUrl, staticQobuzHost, staticCDNProxy, 1)
+		resp, err := e.Client.HTTP.R().Get(cdnUrl)
+		if err == nil && !resp.IsErrorState() {
+			return resp.Bytes(), nil
+		}
+		// CDN failed, try direct
+	}
+
+	// Try downloading max quality directly
 	resp, err := e.Client.HTTP.R().Get(maxUrl)
 	if err == nil && !resp.IsErrorState() {
 		return resp.Bytes(), nil

@@ -12,7 +12,7 @@ import (
 // Regular expressions for extracting secrets from Qobuz web player bundle.
 var (
 	// bundleURLRegex finds the bundle.js URL in the login page.
-	bundleURLRegex = regexp.MustCompile(`<script src="(/resources/\d+\.\d+\.\d+-[a-z]\d{3}/bundle\.js)"></script>`)
+	bundleURLRegex = regexp.MustCompile(`(?i)<script[^>]+src=['"]([^'"]*bundle[^'"]*\.js)['"]`)
 	// appIDRegex extracts the app ID from the bundle.
 	appIDRegex = regexp.MustCompile(`production:{api:{appId:"(?P<app_id>\d{9})",appSecret:"\w{32}"`)
 	// seedTimezoneRegex finds seed values paired with timezone names.
@@ -59,12 +59,18 @@ func fetchSecretsFromHost(client *req.Client, baseURL string) (string, []string,
 
 	matches := bundleURLRegex.FindStringSubmatch(resp.String())
 	if len(matches) < 2 {
-		return "", nil, fmt.Errorf("bundle URL not found")
+		return "", nil, fmt.Errorf("bundle URL not found (status %d)", resp.StatusCode)
 	}
-	bundlePath := matches[1]
+	bundleURL := matches[1]
+	if !strings.HasPrefix(bundleURL, "http://") && !strings.HasPrefix(bundleURL, "https://") {
+		if !strings.HasPrefix(bundleURL, "/") {
+			bundleURL = "/" + bundleURL
+		}
+		bundleURL = baseURL + bundleURL
+	}
 
 	// 2. Get Bundle JS
-	resp, err = client.R().Get(baseURL + bundlePath)
+	resp, err = client.R().Get(bundleURL)
 	if err != nil {
 		return "", nil, err
 	}

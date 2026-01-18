@@ -50,7 +50,7 @@
 | 播放列表下载 | `get_plist_meta()` | ❌ 未实现 | 下载整个播放列表 |
 | 艺术家下载 | `get_artist_meta()` | ❌ 未实现 | 下载艺术家所有专辑 |
 | 厂牌下载 | `get_label_meta()` | ❌ 未实现 | 下载厂牌下所有专辑 |
-| MP3 标签 | `tag_mp3()` | ❌ 未实现 | MP3 格式的 ID3 标签写入 |
+| MP3 标签 | `tag_mp3()` | ✅ 已实现 (ID3v2) | MP3 格式的 ID3 标签写入 |
 
 ### 🟡 中优先级 (体验优化)
 
@@ -68,7 +68,7 @@
 | 功能 | Python 实现 | Go 状态 | 说明 |
 |------|------------|---------|------|
 | 智能专辑过滤 | `smart_discography_filter()` | ❌ 未实现 | 过滤重复/精选集/现场专辑 |
-| 质量降级回退 | `quality_fallback` | ❌ 未实现 | 当请求质量不可用时自动降级 |
+| 质量降级回退 | `quality_fallback` | ✅ 已实现（客户端顺序回退 + MIME 确定扩展名） | 当请求质量不可用时自动降级并使用实际格式 |
 | Last.fm 歌单 | `download_lastfm_pl()` | ❌ 未实现 | 支持 Last.fm 歌单导入 |
 | 仅专辑过滤 | `albums_only` | ❌ 未实现 | 忽略单曲和 EP |
 | 配置文件重置 | `-r` / `--reset` | ❌ 未实现 | 重新配置账户信息 |
@@ -103,6 +103,8 @@ Goodies     []Goodie               `json:"goodies"`      // PDF 书签等
 ### ✅ 已修复
 
 - [x] 文件名包含非法字符 → 添加 `sanitizeFilename()` 函数
+- [x] MP3 标签写入 → 新增 ID3v2 支持
+- [x] 文件扩展名使用 MIME 类型判断 → 质量为 MP3 不再写成 .flac
 
 ### ⚠️ 待修复
 

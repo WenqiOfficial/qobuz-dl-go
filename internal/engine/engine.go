@@ -567,8 +567,8 @@ func (e *Engine) DownloadAlbum(ctx context.Context, albumID string, quality int,
 				trackStates[taskIdx].Progress = 0
 				stateMu.Unlock()
 
-				// Get track URL
-				urlInfo, err := e.Client.GetTrackURL(strconv.Itoa(task.Track.ID), quality)
+				// Get track URL with fallback qualities
+				urlInfo, _, err := e.Client.GetTrackURLWithFallback(strconv.Itoa(task.Track.ID), quality)
 				if err != nil {
 					stateMu.Lock()
 					trackStates[taskIdx].Status = StatusFailed
@@ -733,8 +733,8 @@ func (e *Engine) DownloadTrack(ctx context.Context, trackID string, quality int,
 		return fmt.Errorf("failed to get track metadata: %w", err)
 	}
 
-	// 2. Fetch Track URL
-	info, err := e.Client.GetTrackURL(trackID, quality)
+	// 2. Fetch Track URL (with fallback)
+	info, _, err := e.Client.GetTrackURLWithFallback(trackID, quality)
 	if err != nil {
 		return fmt.Errorf("failed to get track URL: %w", err)
 	}
@@ -786,8 +786,8 @@ type StreamInfo struct {
 // StreamTrack streams the track data to the provided writer.
 // Returns StreamInfo with the actual MIME type from the server.
 func (e *Engine) StreamTrack(ctx context.Context, trackID string, quality int, w io.Writer, onProgress ProgressCallback) (*StreamInfo, error) {
-	// 1. Get Track URL
-	info, err := e.Client.GetTrackURL(trackID, quality)
+	// 1. Get Track URL (with fallback)
+	info, _, err := e.Client.GetTrackURLWithFallback(trackID, quality)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get track URL: %w", err)
 	}

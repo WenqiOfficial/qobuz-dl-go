@@ -172,6 +172,52 @@ func (c *Client) GetTrackURL(trackID string, formatID int) (*TrackURLResponse, e
 	return &result, nil
 }
 
+// qualityOrder defines the quality hierarchy from highest to lowest.
+// 27=Hi-Res (24-bit >96kHz), 7=24-bit ≤96kHz, 6=16-bit, 5=MP3
+var qualityOrder = []int{27, 7, 6, 5}
+
+// GetTrackURLWithFallback tries the requested quality first, then falls back to lower qualities only.
+// Returns the first successful TrackURLResponse and the quality ID actually used.
+// Example: request 7 → tries 7 → 6 → 5 (never tries 27 which is higher).
+func (c *Client) GetTrackURLWithFallback(trackID string, requestedFormatID int) (*TrackURLResponse, int, error) {
+	// Find starting index in quality hierarchy
+	startIdx := 0
+	for i, q := range qualityOrder {
+		if q == requestedFormatID {
+			startIdx = i
+			break
+		}
+	}
+
+	// If requested quality not in our list, start from it then fall through our list
+	var qualities []int
+	found := false
+	for _, q := range qualityOrder {
+		if q == requestedFormatID {
+			found = true
+		}
+	}
+
+	if found {
+		// Start from requested quality, only try equal or lower
+		qualities = qualityOrder[startIdx:]
+	} else {
+		// Unknown quality ID: try it first, then all known qualities from highest to lowest
+		qualities = append([]int{requestedFormatID}, qualityOrder...)
+	}
+
+	var lastErr error
+	for _, q := range qualities {
+		info, err := c.GetTrackURL(trackID, q)
+		if err == nil {
+			return info, q, nil
+		}
+		lastErr = err
+	}
+
+	return nil, 0, fmt.Errorf("all quality fallbacks failed (tried %v): %w", qualities, lastErr)
+}
+
 // GetTrack retrieves metadata for a single track by its ID.
 func (c *Client) GetTrack(trackID string) (*TrackMetadata, error) {
 	var result TrackMetadata

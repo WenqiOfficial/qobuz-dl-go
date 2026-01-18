@@ -29,6 +29,7 @@ var (
 	flagNoSave    bool
 	flagPort      string
 	flagThreads   int
+	flagNoCDN     bool // Disable CDN proxy site
 )
 
 func main() {
@@ -140,6 +141,7 @@ func main() {
 	rootCmd.PersistentFlags().StringVarP(&flagToken, "token", "t", "", "User Auth Token")
 	rootCmd.PersistentFlags().StringVar(&flagProxy, "proxy", "", "Proxy URL (http/https/socks5), overrides HTTP_PROXY/HTTPS_PROXY env")
 	rootCmd.PersistentFlags().BoolVar(&flagNoSave, "nosave", false, "Do not save credentials to account.json")
+	rootCmd.PersistentFlags().BoolVar(&flagNoCDN, "nocdn", false, "Disable CDN proxy, connect to Qobuz directly")
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
@@ -172,7 +174,7 @@ func setupClient(isServer bool) (*api.Client, error) {
 	needSecretValidation := false
 	if appID == "" {
 		fmt.Println("App ID missing. Fetching from Qobuz...")
-		fetchedID, secrets, err := api.FetchSecrets(flagProxy)
+		fetchedID, secrets, err := api.FetchSecrets(flagProxy, !flagNoCDN)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch secrets: %w", err)
 		}
@@ -187,6 +189,13 @@ func setupClient(isServer bool) (*api.Client, error) {
 
 	// 4. Create Client with current appID/appSecret
 	client := api.NewClient(appID, appSecret)
+
+	// Set CDN proxy preference
+	if flagNoCDN {
+		client.SetUseProxy(false)
+		fmt.Println("CDN proxy disabled, using direct connection")
+	}
+
 	if flagProxy != "" {
 		if err := client.SetProxy(flagProxy); err != nil {
 			fmt.Printf("Warning: Failed to set proxy: %v\n", err)
@@ -265,7 +274,7 @@ func setupClient(isServer bool) (*api.Client, error) {
 		secrets := acc.PendingSecrets
 		if len(secrets) == 0 {
 			fmt.Println("Fetching secrets from Qobuz...")
-			fetchedID, fetchedSecrets, err := api.FetchSecrets(flagProxy)
+			fetchedID, fetchedSecrets, err := api.FetchSecrets(flagProxy, !flagNoCDN)
 			if err != nil {
 				return nil, fmt.Errorf("failed to fetch secrets: %w", err)
 			}

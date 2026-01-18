@@ -172,6 +172,33 @@ func (c *Client) GetTrackURL(trackID string, formatID int) (*TrackURLResponse, e
 	return &result, nil
 }
 
+// GetTrackURLWithFallback tries the requested quality first, then falls back to lower qualities.
+// Returns the first successful TrackURLResponse and the quality ID used.
+// Order tried: requested -> 27 -> 7 -> 6 -> 5 (deduplicated).
+func (c *Client) GetTrackURLWithFallback(trackID string, requestedFormatID int) (*TrackURLResponse, int, error) {
+	// Build ordered, deduped list
+	order := []int{requestedFormatID, 27, 7, 6, 5}
+	seen := make(map[int]bool)
+	var qualities []int
+	for _, q := range order {
+		if !seen[q] {
+			qualities = append(qualities, q)
+			seen[q] = true
+		}
+	}
+
+	var lastErr error
+	for _, q := range qualities {
+		info, err := c.GetTrackURL(trackID, q)
+		if err == nil {
+			return info, q, nil
+		}
+		lastErr = err
+	}
+
+	return nil, 0, fmt.Errorf("all quality fallbacks failed (tried %v): %w", qualities, lastErr)
+}
+
 // GetTrack retrieves metadata for a single track by its ID.
 func (c *Client) GetTrack(trackID string) (*TrackMetadata, error) {
 	var result TrackMetadata

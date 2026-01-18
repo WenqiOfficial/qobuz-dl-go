@@ -16,34 +16,70 @@ import (
 
 // API constants for Qobuz service.
 const (
-	BaseURL   = "https://www.qobuz.com/api.json/0.2/"
-	UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:83.0) Gecko/20100101 Firefox/83.0"
+	BaseURLProxy  = "https://qobuz.wenqi.icu/api.json/0.2/" // Cloudflare Workers proxy
+	BaseURLDirect = "https://www.qobuz.com/api.json/0.2/"   // Direct Qobuz API
+	UserAgent     = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:83.0) Gecko/20100101 Firefox/83.0"
 )
 
 // Client is the Qobuz API client that handles all API requests.
 // It manages authentication state and request signing.
 type Client struct {
-	HTTP      *req.Client // HTTP client with configured defaults
-	AppID     string      // Application ID obtained from Qobuz web player
-	AppSecret string      // Application secret for request signing
-	UserToken string      // User authentication token
+	HTTP        *req.Client // HTTP client with configured defaults
+	AppID       string      // Application ID obtained from Qobuz web player
+	AppSecret   string      // Application secret for request signing
+	UserToken   string      // User authentication token
+	UseProxy    bool        // Whether to use proxy site (default true)
+	currentBase string      // Current base URL in use
 }
 
 // NewClient creates a new Qobuz API client with the given credentials.
 // The client is configured with default headers and base URL.
+// By default, it tries the proxy site first.
 func NewClient(appID, appSecret string) *Client {
 	c := &Client{
 		AppID:     appID,
 		AppSecret: appSecret,
 		HTTP:      req.NewClient(),
+		UseProxy:  true,
 	}
 
-	c.HTTP.SetBaseURL(BaseURL).
+	// Start with proxy by default
+	c.currentBase = BaseURLProxy
+	c.HTTP.SetBaseURL(c.currentBase).
 		SetUserAgent(UserAgent).
 		SetCommonHeader("X-App-Id", appID).
 		SetCommonHeader("Content-Type", "application/json;charset=UTF-8")
 
 	return c
+}
+
+// NewClientDirect creates a client that uses direct Qobuz API without proxy.
+func NewClientDirect(appID, appSecret string) *Client {
+	c := NewClient(appID, appSecret)
+	c.SetUseProxy(false)
+	return c
+}
+
+// SetUseProxy enables or disables the proxy site.
+func (c *Client) SetUseProxy(useProxy bool) {
+	c.UseProxy = useProxy
+	if useProxy {
+		c.currentBase = BaseURLProxy
+	} else {
+		c.currentBase = BaseURLDirect
+	}
+	c.HTTP.SetBaseURL(c.currentBase)
+}
+
+// GetCurrentBaseURL returns the current API base URL.
+func (c *Client) GetCurrentBaseURL() string {
+	return c.currentBase
+}
+
+// switchToDirect switches from proxy to direct API.
+func (c *Client) switchToDirect() {
+	c.currentBase = BaseURLDirect
+	c.HTTP.SetBaseURL(c.currentBase)
 }
 
 // SetProxy configures the HTTP client to use the specified proxy URL.
@@ -71,8 +107,20 @@ func (c *Client) SetUserToken(token string) {
 	c.HTTP.SetCommonHeader("X-User-Auth-Token", token)
 }
 
-// Login performs the user login and stores the UserAuthToken
+// Login performs the user login and stores the UserAuthToken.
+// If UseProxy is true, tries proxy first then falls back to direct.
 func (c *Client) Login(email, password string) (*LoginResponse, error) {
+	result, err := c.loginInternal(email, password)
+	if err != nil && c.UseProxy && c.currentBase == BaseURLProxy {
+		// Fallback to direct API
+		fmt.Println("Proxy failed, falling back to direct API...")
+		c.switchToDirect()
+		return c.loginInternal(email, password)
+	}
+	return result, err
+}
+
+func (c *Client) loginInternal(email, password string) (*LoginResponse, error) {
 	var result LoginResponse
 	resp, err := c.HTTP.R().
 		SetQueryParams(map[string]string{

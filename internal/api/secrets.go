@@ -12,7 +12,7 @@ import (
 // Regular expressions for extracting secrets from Qobuz web player bundle.
 var (
 	// bundleURLRegex finds the bundle.js URL in the login page.
-	bundleURLRegex = regexp.MustCompile(`<script src="(/resources/\d+\.\d+\.\d+-[a-z]\d{3}/bundle\.js)"></script>`)
+	bundleURLRegex = regexp.MustCompile(`(?i)<script[^>]+src=['"]([^'"]*bundle[^'"]*\.js)['"]`)
 	// appIDRegex extracts the app ID from the bundle.
 	appIDRegex = regexp.MustCompile(`production:{api:{appId:"(?P<app_id>\d{9})",appSecret:"\w{32}"`)
 	// seedTimezoneRegex finds seed values paired with timezone names.
@@ -25,26 +25,52 @@ var (
 // It fetches the login page, locates the bundle.js, and extracts credentials.
 // Returns the App ID, a list of potential secrets, and any error encountered.
 // proxyURL is optional; pass empty string to use direct connection.
-func FetchSecrets(proxyURL string) (string, []string, error) {
+// useProxySite controls whether to try the CDN proxy first.
+func FetchSecrets(proxyURL string, useProxySite bool) (string, []string, error) {
 	client := req.NewClient()
 	if proxyURL != "" {
 		client.SetProxyURL(proxyURL)
 	}
 
+	// Determine base URL
+	playBaseURL := "https://play.qobuz.com"
+	playBaseURLProxy := "https://play-qobuz.wenqi.icu"
+
+	// Try proxy first if enabled
+	if useProxySite {
+		appID, secrets, err := fetchSecretsFromHost(client, playBaseURLProxy)
+		if err == nil {
+			return appID, secrets, nil
+		}
+		fmt.Println("CDN proxy failed for secrets, falling back to direct...")
+	}
+
+	// Direct connection
+	return fetchSecretsFromHost(client, playBaseURL)
+}
+
+// fetchSecretsFromHost fetches secrets from a specific host.
+func fetchSecretsFromHost(client *req.Client, baseURL string) (string, []string, error) {
 	// 1. Get Login Page to find bundle URL
-	resp, err := client.R().Get("https://play.qobuz.com/login")
+	resp, err := client.R().Get(baseURL + "/login")
 	if err != nil {
 		return "", nil, err
 	}
 
 	matches := bundleURLRegex.FindStringSubmatch(resp.String())
 	if len(matches) < 2 {
-		return "", nil, fmt.Errorf("bundle URL not found")
+		return "", nil, fmt.Errorf("bundle URL not found (status %d)", resp.StatusCode)
 	}
-	bundlePath := matches[1]
+	bundleURL := matches[1]
+	if !strings.HasPrefix(bundleURL, "http://") && !strings.HasPrefix(bundleURL, "https://") {
+		if !strings.HasPrefix(bundleURL, "/") {
+			bundleURL = "/" + bundleURL
+		}
+		bundleURL = baseURL + bundleURL
+	}
 
 	// 2. Get Bundle JS
-	resp, err = client.R().Get("https://play.qobuz.com" + bundlePath)
+	resp, err = client.R().Get(bundleURL)
 	if err != nil {
 		return "", nil, err
 	}

@@ -20,14 +20,17 @@ This project supports CLI (Command Line Interface) mode and has Web service mode
     *   MP3 (320kbps)
     *   FLAC (16-bit / 44.1kHz)
     *   FLAC (24-bit / Hi-Res up to 192kHz)
-*   **🏷️ Complete Metadata**: Automatically writes full track tags (title, artist, album, track number, etc.) via Vorbis Comments.
-*   **🎨 Cover Art**: Downloads and embeds album artwork.
+*   **🏷️ Complete Metadata**:
+    *   FLAC: Vorbis Comments tags
+    *   MP3: ID3v2 tags
+*   **🎨 Cover Art**: Downloads and embeds high-quality album artwork.
 *   **🔐 Smart Credential Management**:
     *   Interactive login support.
     *   Command-line credential passing.
     *   Local credential caching (`account.json`).
     *   `--nosave` option for privacy.
 *   **🌐 Network Support**: Full HTTP / HTTPS / SOCKS5 proxy support.
+*   **🚀 CDN Acceleration**: Built-in CDN proxy for optimized access in China (can be disabled with `--nocdn`).
 
 ## 🛠️ Installation & Build
 
@@ -107,10 +110,19 @@ You can also manually specify a proxy with `--proxy`:
 ./qobuz-dl-go dl <url> --proxy socks5://127.0.0.1:1080
 ```
 
-### 5. Other Options
+### 5. CDN Acceleration
+
+CDN acceleration is enabled by default for Chinese mainland access. To disable:
+
+```bash
+./qobuz-dl-go dl <url> --nocdn
+```
+
+### 6. Other Options
 
 *   `--output`, `-o`: Specify output directory (defaults to current directory).
 *   `--nosave`: Don't save credentials to local `account.json`.
+*   `--nocdn`: Disable CDN acceleration, connect directly to Qobuz servers.
 *   `--app-id`, `--app-secret`: Manually specify App ID and Secret (usually not needed - auto-fetched).
 
 ## 📂 Configuration Files

@@ -12,9 +12,11 @@
 - [x] API 客户端: 基于 `req/v3` 的客户端，支持 MD5 签名生成
 - [x] 下载器: 高性能并发下载 (流式 & 文件)
 - [x] 元数据: FLAC Vorbis Comments 标签写入
+- [x] 元数据: MP3 ID3v2 标签写入 (github.com/bogem/id3v2/v2)
 - [x] 封面: 高质量封面下载与嵌入
 - [x] 代理支持: HTTP/SOCKS5 代理集成
 - [x] 配置管理: JSON 配置与账户持久化
+- [x] CDN 代理: 支持国内加速访问
 
 ## 💻 Phase 3: CLI (已完成)
 
@@ -22,6 +24,7 @@
 - [x] 基于 `mpb` 的进度条
 - [x] 交互式认证回退
 - [x] 音质/输出/代理参数
+- [x] `--nocdn` 禁用 CDN 代理
 
 ## 🌐 Phase 4: Web 界面 (待开发)
 
@@ -36,7 +39,70 @@
 - [x] 强制最大质量封面
 - [x] 文件名安全字符清理 (sanitize)
 - [x] 代码注释整理
+- [x] 音质降级回退 (27→7→6→5)
+- [x] MIME 类型自动识别文件扩展名
+- [x] CJK 字符对齐显示
 - [ ] 完善单元测试
+
+---
+
+## 📐 关键实现规范
+
+### 音质 ID 映射
+
+| ID | 格式 | 说明 |
+|----|------|------|
+| `5` | MP3 320kbps | 有损压缩 |
+| `6` | FLAC 16-bit/44.1kHz | CD 品质 (默认) |
+| `7` | FLAC 24-bit/96kHz | Hi-Res |
+| `27` | FLAC 24-bit/192kHz | 最高音质 |
+
+### CDN 代理域名
+
+| CDN 域名 | 原始域名 | 用途 |
+|----------|----------|------|
+| `qobuz.wenqi.icu` | `www.qobuz.com` | API 请求 |
+| `play-qobuz.wenqi.icu` | `play.qobuz.com` | Web Player / Secrets 获取 |
+| `static-qobuz.wenqi.icu` | `static.qobuz.com` | 封面图片 |
+
+### 音质回退逻辑
+
+```
+用户请求质量 → 27 → 7 → 6 → 5
+             (只向下降级，不向上升级)
+```
+
+- 客户端顺序尝试，从请求质量开始向下回退
+- 使用服务器返回的 MIME 类型确定实际文件扩展名
+- `audio/mpeg` → `.mp3`，`audio/flac` → `.flac`
+
+### 封面下载规范
+
+- 强制使用最大尺寸 (`_max` 后缀)
+- CDN 模式下优先使用 `static-qobuz.wenqi.icu`
+- CDN 失败自动回退到 `static.qobuz.com`
+
+### Secrets 获取流程
+
+```
+1. 请求 play.qobuz.com (或 CDN: play-qobuz.wenqi.icu)
+2. 解析 bundle.js URL (正则: (?i)<script[^>]+src=['"]([^'"]*bundle[^'"]*\.js)['"])
+3. 下载 bundle.js 并提取 App ID 和 Secrets
+4. CDN 失败时自动回退直连
+```
+
+### 元数据标签规范
+
+**FLAC (Vorbis Comments)**:
+- TITLE, ARTIST, ALBUM, ALBUMARTIST
+- TRACKNUMBER, TRACKTOTAL, DISCNUMBER, DISCTOTAL
+- DATE, GENRE, DESCRIPTION
+
+**MP3 (ID3v2)**:
+- TIT2 (标题), TPE1 (艺术家), TALB (专辑), TPE2 (专辑艺术家)
+- TRCK (曲号/总曲数), TPOS (碟号/总碟数)
+- TCON (流派), TDRC (日期), TIT3 (描述)
+- APIC (封面图片, MIME: image/jpeg)
 
 ---
 

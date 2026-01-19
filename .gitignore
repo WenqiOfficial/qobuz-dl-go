@@ -35,3 +35,4 @@ go.work.sum
 account.json
 /release
 /workers
+/update_temp

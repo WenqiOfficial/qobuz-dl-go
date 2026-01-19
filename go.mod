@@ -7,10 +7,12 @@ require (
 	github.com/go-flac/go-flac v1.0.0
 	github.com/imroc/req/v3 v3.57.0
 	github.com/labstack/echo/v4 v4.15.0
+	github.com/minio/selfupdate v0.6.0
 	github.com/spf13/cobra v1.10.2
 )
 
 require (
+	aead.dev/minisign v0.2.0 // indirect
 	github.com/andybalholm/brotli v1.2.0 // indirect
 	github.com/google/go-querystring v1.1.0 // indirect
 	github.com/icholy/digest v1.1.0 // indirect

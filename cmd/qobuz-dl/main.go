@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -13,6 +14,7 @@ import (
 	"qobuz-dl-go/internal/config"
 	"qobuz-dl-go/internal/engine"
 	"qobuz-dl-go/internal/server"
+	"qobuz-dl-go/internal/updater"
 	"qobuz-dl-go/internal/version"
 )
 
@@ -33,6 +35,9 @@ var (
 )
 
 func main() {
+	// Clean up leftover backup from previous update
+	cleanupOldBinary()
+
 	var rootCmd = &cobra.Command{
 		Use:     "qobuz-dl-go",
 		Short:   "A high performance Qobuz music downloader",
@@ -130,8 +135,110 @@ func main() {
 	dlCmd.Flags().StringVarP(&flagOutputDir, "output", "o", ".", "Output directory")
 	dlCmd.Flags().IntVarP(&flagThreads, "threads", "n", 3, "Number of concurrent download threads (1-10)")
 
+	// Update Command
+	var updateCmd = &cobra.Command{
+		Use:   "update",
+		Short: "Update to the latest version",
+		Run: func(cmd *cobra.Command, args []string) {
+			// Configure proxy for updater if specified
+			if flagProxy != "" {
+				if err := updater.SetProxy(flagProxy); err != nil {
+					fmt.Printf("Warning: Failed to set proxy for update: %v\n", err)
+				}
+			}
+
+			fmt.Println("Checking for updates...")
+
+			// Use CDN unless --nocdn is specified
+			useCDN := !flagNoCDN
+			result, err := updater.CheckForUpdate(useCDN)
+			if err != nil {
+				fmt.Printf("Failed to check for updates: %v\n", err)
+				os.Exit(1)
+			}
+
+			if !result.HasUpdate {
+				fmt.Printf("Already up to date (v%s)\n", result.CurrentVersion)
+				return
+			}
+
+			fmt.Printf("Update available: v%s -> v%s\n", result.CurrentVersion, result.LatestVersion)
+
+			// Get platform-specific asset
+			asset, err := result.ReleaseInfo.GetPlatformAsset()
+			if err != nil {
+				fmt.Printf("No release found for your platform: %v\n", err)
+				os.Exit(1)
+			}
+
+			fmt.Printf("Downloading %s (%.2f MB)...\n", asset.Name, float64(asset.Size)/1024/1024)
+
+			// Download and apply update atomically
+			err = updater.DownloadAndApply(asset, result.ReleaseInfo.TagName, func(current, total int64) {
+				percent := int(float64(current) / float64(total) * 100)
+				fmt.Printf("\r  Progress: %d%%", percent)
+			})
+			if err != nil {
+				fmt.Printf("\nUpdate failed: %v\n", err)
+				os.Exit(1)
+			}
+
+			fmt.Printf("\n\nUpdate complete! v%s -> v%s\n", result.CurrentVersion, result.LatestVersion)
+			fmt.Println("Please restart the application to use the new version.")
+			os.Exit(0)
+		},
+	}
+
+	// Completion Command - generates completion scripts to files
+	var completionCmd = &cobra.Command{
+		Use:   "completion [bash|zsh|fish|powershell]",
+		Short: "Generate shell completion script files",
+		Long: `Generate shell completion scripts and save them to the current directory.
+
+Generated files:
+  bash:       qobuz-dl-go.bash
+  zsh:        _qobuz-dl-go
+  fish:       qobuz-dl-go.fish
+  powershell: qobuz-dl-go.ps1`,
+		Args:      cobra.ExactArgs(1),
+		ValidArgs: []string{"bash", "zsh", "fish", "powershell"},
+		Run: func(cmd *cobra.Command, args []string) {
+			var filename string
+			var content strings.Builder
+
+			switch args[0] {
+			case "bash":
+				filename = "qobuz-dl-go.bash"
+				rootCmd.GenBashCompletion(&content)
+			case "zsh":
+				filename = "_qobuz-dl-go"
+				rootCmd.GenZshCompletion(&content)
+			case "fish":
+				filename = "qobuz-dl-go.fish"
+				rootCmd.GenFishCompletion(&content, true)
+			case "powershell":
+				filename = "qobuz-dl-go.ps1"
+				rootCmd.GenPowerShellCompletionWithDesc(&content)
+			default:
+				fmt.Printf("Unknown shell: %s\n", args[0])
+				fmt.Println("Valid options: bash, zsh, fish, powershell")
+				os.Exit(1)
+			}
+
+			if err := os.WriteFile(filename, []byte(content.String()), 0644); err != nil {
+				fmt.Printf("Failed to write completion file: %v\n", err)
+				os.Exit(1)
+			}
+
+			fmt.Printf("Completion script generated: %s\n", filename)
+			os.Exit(0)
+		},
+	}
+
 	rootCmd.AddCommand(dlCmd)
 	rootCmd.AddCommand(serveCmd)
+	rootCmd.AddCommand(updateCmd)
+	rootCmd.AddCommand(completionCmd)
 
 	// Global Flags
 	rootCmd.PersistentFlags().StringVar(&flagAppID, "app-id", "", "Qobuz App ID")
@@ -147,6 +254,9 @@ func main() {
 		fmt.Println(err)
 		os.Exit(1)
 	}
+
+	// Show version info after command execution
+	showVersionInfo()
 }
 
 // setupClient handles all configuration, authentication, and client initialization logic
@@ -315,4 +425,41 @@ func setupClient(isServer bool) (*api.Client, error) {
 	}
 
 	return client, nil
+}
+
+// showVersionInfo displays version information and checks for updates
+func showVersionInfo() {
+	// Always show current version
+	fmt.Printf("\nQobuz DL Go v%s\n", version.Version)
+
+	// Skip update check for dev builds
+	if version.Version == "dev" || strings.HasPrefix(version.Version, "dev-") {
+		return
+	}
+
+	// Check for updates (use CDN by default for faster check)
+	result, err := updater.CheckForUpdate(true)
+	if err != nil {
+		// Silently ignore update check failures
+		return
+	}
+
+	if result.HasUpdate {
+		fmt.Printf("\nUpdate v%s available! Update with:\n", result.LatestVersion)
+		fmt.Println("    qobuz-dl-go update")
+	}
+}
+
+// cleanupOldBinary removes the backup file left by selfupdate after a successful update
+func cleanupOldBinary() {
+	exePath, err := os.Executable()
+	if err != nil {
+		return
+	}
+	// selfupdate renames old binary to: .{filename}.old
+	// e.g., qobuz-dl-go.exe -> .qobuz-dl-go.exe.old
+	dir := filepath.Dir(exePath)
+	name := filepath.Base(exePath)
+	oldPath := filepath.Join(dir, "."+name+".old")
+	os.Remove(oldPath) // Silently ignore errors
 }

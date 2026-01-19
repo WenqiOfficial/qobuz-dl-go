@@ -71,9 +71,9 @@ if ($Release) {
 
 # Build ldflags for version injection
 $ldflags = "-s -w " +
-    "-X qobuz-dl-go/internal/version.Version=$buildVersion " +
-    "-X qobuz-dl-go/internal/version.BuildTime=$timestamp " +
-    "-X qobuz-dl-go/internal/version.GitCommit=$gitCommit"
+    "-X github.com/WenqiOfficial/qobuz-dl-go/internal/version.Version=$buildVersion " +
+    "-X github.com/WenqiOfficial/qobuz-dl-go/internal/version.BuildTime=$timestamp " +
+    "-X github.com/WenqiOfficial/qobuz-dl-go/internal/version.GitCommit=$gitCommit"
 
 function Build-Platform {
     param(

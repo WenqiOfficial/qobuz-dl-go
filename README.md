@@ -164,8 +164,22 @@
 
 ## ⭐ Star
 
-[![Star History Chart](https://api.star-history.com/svg?repos=WenqiOfficial/qobuz-dl-go&type=date&legend=top-left)](https://www.star-history.com/#WenqiOfficial/qobuz-dl-go&type=date&legend=top-left)
+<a href="https://star-history.com/#WenqiOfficial/qobuz-dl-go&Date">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=WenqiOfficial/qobuz-dl-go&type=Date&theme=dark" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=WenqiOfficial/qobuz-dl-go&type=Date" />
+   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=WenqiOfficial/qobuz-dl-go&type=Date" />
+ </picture>
+</a>
 
 ## 📜 许可证
 
 本项目采用 GPL v3 许可证。详情请参阅 [LICENSE](LICENSE) 文件。
+
+## ☕ 赞助我
+
+项目中使用了个人自建CDN，如果觉得这个项目对你有帮助，可以考虑用一杯咖啡支持一下CDN的维护：
+
+- [爱发电](https://afdian.com/a/wenqiofficial)
+
+- [投喂窗](https://blog.wenqi.icu/donate)

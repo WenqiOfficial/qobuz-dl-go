@@ -173,6 +173,14 @@ Please run `go fmt` before submitting code to maintain consistent code style.
 
 This project is licensed under the GPL v3 License. See the [LICENSE](LICENSE) file for details.
 
+## ☕ Support Me
+
+This project uses a self-hosted CDN. If you find it helpful, consider buying me a coffee to support CDN maintenance:
+
+- [Afdian](https://afdian.com/a/wenqiofficial)
+- [Donate](https://blog.wenqi.icu/donate)
+
+
 ## ❗ Caution
 
 This document is translated from Chinese to English for broader accessibility. While efforts have been made to ensure accuracy, some nuances may be lost in translation. Please refer to the original Chinese version for the most precise information.Welcome to report any translation issues or suggest improvements.

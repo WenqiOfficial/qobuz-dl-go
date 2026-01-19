@@ -65,9 +65,9 @@ jobs:
           mkdir -p "dist/qobuz-dl-go-${VERSION}-${{ matrix.os }}-${{ matrix.arch }}"
           
           go build -trimpath -ldflags "-s -w \
-            -X 'qobuz-dl-go/internal/version.Version=${VERSION#v}' \
-            -X 'qobuz-dl-go/internal/version.BuildTime=${{ steps.version.outputs.BUILD_TIME }}' \
-            -X 'qobuz-dl-go/internal/version.GitCommit=${{ steps.version.outputs.COMMIT }}'" \
+            -X 'github.com/WenqiOfficial/qobuz-dl-go/internal/version.Version=${VERSION#v}' \
+            -X 'github.com/WenqiOfficial/qobuz-dl-go/internal/version.BuildTime=${{ steps.version.outputs.BUILD_TIME }}' \
+            -X 'github.com/WenqiOfficial/qobuz-dl-go/internal/version.GitCommit=${{ steps.version.outputs.COMMIT }}'" \
             -o "dist/qobuz-dl-go-${VERSION}-${{ matrix.os }}-${{ matrix.arch }}/${BINARY_NAME}" ./cmd/qobuz-dl
 
       - name: Generate checksums

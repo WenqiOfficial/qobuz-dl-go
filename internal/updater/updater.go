@@ -18,7 +18,7 @@ import (
 
 	"github.com/minio/selfupdate"
 
-	"qobuz-dl-go/internal/version"
+	"github.com/WenqiOfficial/qobuz-dl-go/internal/version"
 )
 
 const (

@@ -4,7 +4,7 @@ package engine
 import (
 	"fmt"
 
-	"qobuz-dl-go/internal/api"
+	"github.com/WenqiOfficial/qobuz-dl-go/internal/api"
 
 	"github.com/bogem/id3v2/v2"
 )

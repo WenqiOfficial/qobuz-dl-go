@@ -650,53 +650,90 @@ func (e *Engine) DownloadAlbum(ctx context.Context, albumID string, quality int,
 }
 
 // downloadFileWithProgress downloads a file and reports progress as percentage.
+// Includes retry logic (1 retry) and cleanup of incomplete files on failure.
 func (e *Engine) downloadFileWithProgress(ctx context.Context, url, outputPath string, onProgress func(int)) error {
-	var contentLength int64 = 0
+	var lastErr error
 
-	resp, err := e.Client.HTTP.R().
-		SetContext(ctx).
-		SetOutputFile(outputPath).
-		SetDownloadCallback(func(info req.DownloadInfo) {
-			if info.Response.ContentLength > 0 {
-				contentLength = info.Response.ContentLength
-				percent := int(float64(info.DownloadedSize) / float64(contentLength) * 100)
-				if percent > 100 {
-					percent = 100
-				}
-				if onProgress != nil {
-					onProgress(percent)
-				}
-			}
-		}).
-		Get(url)
+	// Try up to 2 times (initial + 1 retry)
+	for attempt := 1; attempt <= 2; attempt++ {
+		var contentLength int64 = 0
 
-	if err != nil {
-		return err
+		resp, err := e.Client.HTTP.R().
+			SetContext(ctx).
+			SetOutputFile(outputPath).
+			SetDownloadCallback(func(info req.DownloadInfo) {
+				if info.Response.ContentLength > 0 {
+					contentLength = info.Response.ContentLength
+					percent := int(float64(info.DownloadedSize) / float64(contentLength) * 100)
+					if percent > 100 {
+						percent = 100
+					}
+					if onProgress != nil {
+						onProgress(percent)
+					}
+				}
+			}).
+			Get(url)
+
+		if err == nil && !resp.IsErrorState() {
+			return nil // Success
+		}
+
+		// Record error
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = fmt.Errorf("http error: %s", resp.Status)
+		}
+
+		// If this was the first attempt, remove incomplete file and retry
+		if attempt == 1 {
+			os.Remove(outputPath)               // Cleanup before retry
+			time.Sleep(1000 * time.Millisecond) // Brief pause before retry
+		}
 	}
-	if resp.IsErrorState() {
-		return fmt.Errorf("http error: %s", resp.Status)
-	}
-	return nil
+
+	// Both attempts failed, ensure cleanup
+	os.Remove(outputPath)
+	return fmt.Errorf("download failed after retry: %w", lastErr)
 }
 
 func (e *Engine) downloadFile(ctx context.Context, url, outputPath string, onProgress ProgressCallback) error {
-	resp, err := e.Client.HTTP.R().
-		SetContext(ctx).
-		SetOutputFile(outputPath).
-		SetDownloadCallback(func(info req.DownloadInfo) {
-			if onProgress != nil {
-				onProgress(info.DownloadedSize, info.Response.ContentLength)
-			}
-		}).
-		Get(url)
+	var lastErr error
 
-	if err != nil {
-		return err
+	// Try up to 2 times (initial + 1 retry)
+	for attempt := 1; attempt <= 2; attempt++ {
+		resp, err := e.Client.HTTP.R().
+			SetContext(ctx).
+			SetOutputFile(outputPath).
+			SetDownloadCallback(func(info req.DownloadInfo) {
+				if onProgress != nil {
+					onProgress(info.DownloadedSize, info.Response.ContentLength)
+				}
+			}).
+			Get(url)
+
+		if err == nil && !resp.IsErrorState() {
+			return nil // Success
+		}
+
+		// Record error
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = fmt.Errorf("http error: %s", resp.Status)
+		}
+
+		// If this was the first attempt, remove incomplete file and retry
+		if attempt == 1 {
+			os.Remove(outputPath)               // Cleanup before retry
+			time.Sleep(1000 * time.Millisecond) // Brief pause before retry
+		}
 	}
-	if resp.IsErrorState() {
-		return fmt.Errorf("http error: %s", resp.Status)
-	}
-	return nil
+
+	// Both attempts failed, ensure cleanup
+	os.Remove(outputPath)
+	return fmt.Errorf("download failed after retry: %w", lastErr)
 }
 
 // Static CDN proxy for cover images

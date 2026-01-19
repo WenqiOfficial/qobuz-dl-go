@@ -1,4 +1,4 @@
-module qobuz-dl-go
+module github.com/WenqiOfficial/qobuz-dl-go
 
 go 1.25.5
 

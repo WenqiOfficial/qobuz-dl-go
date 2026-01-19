@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"qobuz-dl-go/internal/api"
+	"github.com/WenqiOfficial/qobuz-dl-go/internal/api"
 
 	"github.com/go-flac/go-flac"
 )

@@ -17,7 +17,7 @@ import (
 
 	"github.com/imroc/req/v3"
 
-	"qobuz-dl-go/internal/api"
+	"github.com/WenqiOfficial/qobuz-dl-go/internal/api"
 )
 
 // Engine is the core download engine that coordinates API calls,

@@ -10,12 +10,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"qobuz-dl-go/internal/api"
-	"qobuz-dl-go/internal/config"
-	"qobuz-dl-go/internal/engine"
-	"qobuz-dl-go/internal/server"
-	"qobuz-dl-go/internal/updater"
-	"qobuz-dl-go/internal/version"
+	"github.com/WenqiOfficial/qobuz-dl-go/internal/api"
+	"github.com/WenqiOfficial/qobuz-dl-go/internal/config"
+	"github.com/WenqiOfficial/qobuz-dl-go/internal/engine"
+	"github.com/WenqiOfficial/qobuz-dl-go/internal/server"
+	"github.com/WenqiOfficial/qobuz-dl-go/internal/updater"
+	"github.com/WenqiOfficial/qobuz-dl-go/internal/version"
 )
 
 var (

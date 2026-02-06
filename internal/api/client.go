@@ -303,3 +303,85 @@ func (c *Client) GetAlbum(albumID string) (*AlbumMetadata, error) {
 
 	return &result, nil
 }
+
+// SearchAlbums searches for albums matching the given query.
+func (c *Client) SearchAlbums(query string, limit int) (*SearchAlbumsResponse, error) {
+	var result SearchAlbumsResponse
+	resp, err := c.HTTP.R().
+		SetQueryParams(map[string]string{
+			"query": query,
+			"limit": strconv.Itoa(limit),
+		}).
+		SetSuccessResult(&result).
+		Get("album/search")
+
+	if err != nil {
+		return nil, err
+	}
+	if resp.IsErrorState() {
+		return nil, errors.New(resp.String())
+	}
+	return &result, nil
+}
+
+// SearchTracks searches for tracks matching the given query.
+func (c *Client) SearchTracks(query string, limit int) (*SearchTracksResponse, error) {
+	var result SearchTracksResponse
+	resp, err := c.HTTP.R().
+		SetQueryParams(map[string]string{
+			"query": query,
+			"limit": strconv.Itoa(limit),
+		}).
+		SetSuccessResult(&result).
+		Get("track/search")
+
+	if err != nil {
+		return nil, err
+	}
+	if resp.IsErrorState() {
+		return nil, errors.New(resp.String())
+	}
+	return &result, nil
+}
+
+// SearchArtists searches for artists matching the given query.
+func (c *Client) SearchArtists(query string, limit int) (*SearchArtistsResponse, error) {
+	var result SearchArtistsResponse
+	resp, err := c.HTTP.R().
+		SetQueryParams(map[string]string{
+			"query": query,
+			"limit": strconv.Itoa(limit),
+		}).
+		SetSuccessResult(&result).
+		Get("artist/search")
+
+	if err != nil {
+		return nil, err
+	}
+	if resp.IsErrorState() {
+		return nil, errors.New(resp.String())
+	}
+	return &result, nil
+}
+
+// GetArtistAlbums retrieves an artist's albums by artist ID.
+func (c *Client) GetArtistAlbums(artistID string, limit, offset int) (*ArtistAlbumsResponse, error) {
+	var result ArtistAlbumsResponse
+	resp, err := c.HTTP.R().
+		SetQueryParams(map[string]string{
+			"artist_id": artistID,
+			"extra":     "albums",
+			"limit":     strconv.Itoa(limit),
+			"offset":    strconv.Itoa(offset),
+		}).
+		SetSuccessResult(&result).
+		Get("artist/get")
+
+	if err != nil {
+		return nil, err
+	}
+	if resp.IsErrorState() {
+		return nil, errors.New(resp.String())
+	}
+	return &result, nil
+}

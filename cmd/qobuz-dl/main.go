@@ -21,18 +21,18 @@ import (
 
 var (
 	// Flags
-	flagAppID     string
-	flagAppSecret string
-	flagEmail     string
-	flagPassword  string
-	flagToken     string
-	flagQuality   int
-	flagOutputDir string
-	flagProxy     string
-	flagNoSave    bool
-	flagPort      string
-	flagThreads   int
-	flagNoCDN     bool // Disable CDN proxy site
+	flagAppID      string
+	flagAppSecret  string
+	flagEmail      string
+	flagPassword   string
+	flagToken      string
+	flagQuality    int
+	flagOutputDir  string
+	flagProxy      string
+	flagNoSave     bool
+	flagPort       string
+	flagThreads    int
+	flagNoCDN      bool   // Disable CDN proxy site
 	flagSearchType string // Search type: album, track, artist
 )
 
@@ -454,8 +454,8 @@ func runAlbumSearch(client *api.Client, eng *engine.Engine, query string) {
 	}
 
 	// Display results
-	fmt.Println("  #  Artist - Album                                       Duration  Quality")
-	fmt.Println(strings.Repeat("─", 78))
+	fmt.Println("  #  Artist - Album                                         Duration  Quality")
+	fmt.Println(strings.Repeat("─", 88))
 
 	for i, album := range items {
 		title := album.Title
@@ -826,6 +826,7 @@ func showVersionInfo() {
 
 	// Skip update check for dev builds
 	if version.Version == "dev" || strings.HasPrefix(version.Version, "dev-") {
+		fmt.Println("Skip check for dev version.")
 		return
 	}
 

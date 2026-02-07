@@ -32,6 +32,7 @@ type TrackMetadata struct {
 	TrackNumber         int     `json:"track_number"`
 	MediaNumber         int     `json:"media_number"`
 	MaximumBitDepth     int     `json:"maximum_bit_depth"`
+	HiresStreamable     bool    `json:"hires_streamable"`
 }
 
 // AlbumMetadata contains all metadata for an album.
@@ -41,6 +42,7 @@ type AlbumMetadata struct {
 	} `json:"genre"`
 	ID                string `json:"id"`
 	Title             string `json:"title"`
+	Version           string `json:"version"`
 	ReleaseDateOrg    string `json:"release_date_original"`
 	ReleaseDateStream string `json:"release_date_stream"`
 	Artist            struct {
@@ -53,5 +55,59 @@ type AlbumMetadata struct {
 		Small string `json:"small"`
 		Large string `json:"large"`
 	} `json:"image"`
-	Duration int `json:"duration"`
+	Duration            int     `json:"duration"`
+	TracksCount         int     `json:"tracks_count"`
+	MaximumBitDepth     int     `json:"maximum_bit_depth"`
+	MaximumSamplingRate float64 `json:"maximum_sampling_rate"`
+	HiresStreamable     bool    `json:"hires_streamable"`
+	Streamable          bool    `json:"streamable"`
+	ReleaseType         string  `json:"release_type"`
+}
+
+// SearchAlbumsResponse is the response from album/search endpoint.
+type SearchAlbumsResponse struct {
+	Albums struct {
+		Items []AlbumMetadata `json:"items"`
+		Total int             `json:"total"`
+		Limit int             `json:"limit"`
+	} `json:"albums"`
+}
+
+// SearchTracksResponse is the response from track/search endpoint.
+type SearchTracksResponse struct {
+	Tracks struct {
+		Items []TrackMetadata `json:"items"`
+		Total int             `json:"total"`
+		Limit int             `json:"limit"`
+	} `json:"tracks"`
+}
+
+// ArtistMetadata contains metadata for an artist.
+type ArtistMetadata struct {
+	ID          int    `json:"id"`
+	Name        string `json:"name"`
+	AlbumsCount int    `json:"albums_count"`
+	Image       *struct {
+		Small string `json:"small"`
+		Large string `json:"large"`
+	} `json:"image"`
+}
+
+// SearchArtistsResponse is the response from artist/search endpoint.
+type SearchArtistsResponse struct {
+	Artists struct {
+		Items []ArtistMetadata `json:"items"`
+		Total int              `json:"total"`
+		Limit int              `json:"limit"`
+	} `json:"artists"`
+}
+
+// ArtistAlbumsResponse is the response from artist/get with extra=albums.
+type ArtistAlbumsResponse struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+	Albums struct {
+		Items []AlbumMetadata `json:"items"`
+		Total int             `json:"total"`
+	} `json:"albums"`
 }

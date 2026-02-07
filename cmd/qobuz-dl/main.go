@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -20,18 +21,19 @@ import (
 
 var (
 	// Flags
-	flagAppID     string
-	flagAppSecret string
-	flagEmail     string
-	flagPassword  string
-	flagToken     string
-	flagQuality   int
-	flagOutputDir string
-	flagProxy     string
-	flagNoSave    bool
-	flagPort      string
-	flagThreads   int
-	flagNoCDN     bool // Disable CDN proxy site
+	flagAppID      string
+	flagAppSecret  string
+	flagEmail      string
+	flagPassword   string
+	flagToken      string
+	flagQuality    int
+	flagOutputDir  string
+	flagProxy      string
+	flagNoSave     bool
+	flagPort       string
+	flagThreads    int
+	flagNoCDN      bool   // Disable CDN proxy site
+	flagSearchType string // Search type: album, track, artist
 )
 
 func main() {
@@ -236,6 +238,7 @@ Generated files:
 	}
 
 	rootCmd.AddCommand(dlCmd)
+	rootCmd.AddCommand(searchCmd(dlCmd))
 	rootCmd.AddCommand(serveCmd)
 	rootCmd.AddCommand(updateCmd)
 	rootCmd.AddCommand(completionCmd)
@@ -257,6 +260,395 @@ Generated files:
 
 	// Show version info after command execution
 	showVersionInfo()
+}
+
+// searchCmd creates the search command with download integration.
+func searchCmd(dlCmd *cobra.Command) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "search [query]",
+		Short: "Search and download music from Qobuz",
+		Long: `Search for albums, tracks, or artists on Qobuz and interactively select items to download.
+
+Results are displayed in a numbered list. Enter the number to download.
+
+Search types:
+  album   Search for albums (default)
+  track   Search for tracks
+  artist  Search for artists (lists their albums for selection)`,
+		Args: cobra.MinimumNArgs(1),
+		Run: func(cmd *cobra.Command, args []string) {
+			query := strings.Join(args, " ")
+			if len(strings.TrimSpace(query)) < 2 {
+				fmt.Println("Error: search query too short (minimum 2 characters)")
+				os.Exit(1)
+			}
+
+			// Setup client
+			client, err := setupClient(false)
+			if err != nil {
+				fmt.Printf("Error: %v\n", err)
+				os.Exit(1)
+			}
+
+			eng := engine.New(client)
+			if flagThreads > 0 {
+				eng.SetConcurrency(flagThreads)
+			}
+
+			searchType := strings.ToLower(flagSearchType)
+
+			switch searchType {
+			case "album":
+				runAlbumSearch(client, eng, query)
+			case "track":
+				runTrackSearch(client, eng, query)
+			case "artist":
+				runArtistSearch(client, eng, query)
+			default:
+				fmt.Printf("Error: unknown search type %q (use album, track, or artist)\n", searchType)
+				os.Exit(1)
+			}
+		},
+	}
+
+	cmd.Flags().StringVarP(&flagSearchType, "type", "T", "album", "Search type: album, track, artist")
+	cmd.Flags().IntVarP(&flagQuality, "quality", "q", 6, "Quality ID (5=MP3, 6=FLAC 16bit, 7=FLAC 24bit, 27=FLAC 24bit>96)")
+	cmd.Flags().StringVarP(&flagOutputDir, "output", "o", ".", "Output directory")
+	cmd.Flags().IntVarP(&flagThreads, "threads", "n", 3, "Number of concurrent download threads (1-10)")
+
+	return cmd
+}
+
+// formatDuration formats seconds into a human-readable mm:ss or h:mm:ss string.
+func formatDuration(seconds int) string {
+	if seconds <= 0 {
+		return "0:00"
+	}
+	h := seconds / 3600
+	m := (seconds % 3600) / 60
+	s := seconds % 60
+	if h > 0 {
+		return fmt.Sprintf("%d:%02d:%02d", h, m, s)
+	}
+	return fmt.Sprintf("%d:%02d", m, s)
+}
+
+// qualityTag returns a concise quality label for display.
+func qualityTag(hiRes bool, bitDepth int, sampleRate float64) string {
+	if hiRes {
+		return fmt.Sprintf("Hi-Res %d/%gkHz", bitDepth, sampleRate)
+	}
+	return "Lossless"
+}
+
+// runeWidth returns the display width of a rune (CJK = 2, others = 1).
+func runeWidth(r rune) int {
+	if r >= 0x1100 && r <= 0x115F ||
+		r >= 0x2E80 && r <= 0x9FFF ||
+		r >= 0xA960 && r <= 0xA97F ||
+		r >= 0xAC00 && r <= 0xD7FF ||
+		r >= 0xF900 && r <= 0xFAFF ||
+		r >= 0xFE10 && r <= 0xFE1F ||
+		r >= 0xFE30 && r <= 0xFE6F ||
+		r >= 0xFF00 && r <= 0xFF60 ||
+		r >= 0xFFE0 && r <= 0xFFE6 ||
+		r >= 0x20000 && r <= 0x2FFFF ||
+		r >= 0x30000 && r <= 0x3FFFF {
+		return 2
+	}
+	if r < 0x20 || r == 0x7F ||
+		r >= 0x200B && r <= 0x200F ||
+		r >= 0x2028 && r <= 0x202E ||
+		r >= 0xFE00 && r <= 0xFE0F ||
+		r == 0xFEFF {
+		return 0
+	}
+	return 1
+}
+
+// stringDisplayWidth calculates the total display width of a string.
+func stringDisplayWidth(s string) int {
+	w := 0
+	for _, r := range s {
+		w += runeWidth(r)
+	}
+	return w
+}
+
+// truncateToWidth truncates a string to fit within a given display width, adding "..." if needed.
+func truncateToWidth(s string, maxWidth int) string {
+	if maxWidth <= 0 {
+		return ""
+	}
+	if maxWidth <= 3 {
+		return strings.Repeat(".", maxWidth)
+	}
+	if stringDisplayWidth(s) <= maxWidth {
+		return s
+	}
+	target := maxWidth - 3
+	w := 0
+	var result []rune
+	for _, r := range s {
+		rw := runeWidth(r)
+		if w+rw > target {
+			break
+		}
+		result = append(result, r)
+		w += rw
+	}
+	return string(result) + "..."
+}
+
+// padRight pads a string to a fixed display width using spaces.
+func padRight(s string, targetWidth int) string {
+	cur := stringDisplayWidth(s)
+	if cur >= targetWidth {
+		return truncateToWidth(s, targetWidth)
+	}
+	return s + strings.Repeat(" ", targetWidth-cur)
+}
+
+// padLeft pads a string to a fixed display width with leading spaces.
+func padLeft(s string, targetWidth int) string {
+	cur := stringDisplayWidth(s)
+	if cur >= targetWidth {
+		return truncateToWidth(s, targetWidth)
+	}
+	return strings.Repeat(" ", targetWidth-cur) + s
+}
+
+// readSelection reads user input and returns the selected 1-based index.
+// Returns -1 for quit, 0 for invalid input.
+func readSelection(max int) int {
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Printf("\nEnter number to download (1-%d, q to quit): ", max)
+	line, _ := reader.ReadString('\n')
+	line = strings.TrimSpace(line)
+
+	if line == "" || strings.EqualFold(line, "q") || strings.EqualFold(line, "quit") {
+		return -1
+	}
+
+	n, err := strconv.Atoi(line)
+	if err != nil || n < 1 || n > max {
+		return 0
+	}
+	return n
+}
+
+// runAlbumSearch performs an album search and handles interactive download.
+func runAlbumSearch(client *api.Client, eng *engine.Engine, query string) {
+	fmt.Printf("Searching albums for %q...\n\n", query)
+
+	result, err := client.SearchAlbums(query, 10)
+	if err != nil {
+		fmt.Printf("Search failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	items := result.Albums.Items
+	if len(items) == 0 {
+		fmt.Println("No albums found.")
+		return
+	}
+
+	// Display results
+	fmt.Println("  #  Artist - Album                                         Duration  Quality")
+	fmt.Println(strings.Repeat("─", 88))
+
+	for i, album := range items {
+		title := album.Title
+		if album.Version != "" {
+			title += " (" + album.Version + ")"
+		}
+
+		display := fmt.Sprintf("%s - %s", album.Artist.Name, title)
+		dur := formatDuration(album.Duration)
+		tag := qualityTag(album.HiresStreamable, album.MaximumBitDepth, album.MaximumSamplingRate)
+
+		// Truncate display to fit
+		maxDisplayWidth := 54
+		displayPadded := padRight(display, maxDisplayWidth)
+		durPadded := padLeft(dur, 8)
+
+		fmt.Printf(" %2d  %s %s  [%s]\n", i+1, displayPadded, durPadded, tag)
+	}
+
+	// Interactive selection
+	sel := readSelection(len(items))
+	if sel == -1 {
+		return
+	}
+	if sel == 0 {
+		fmt.Println("Invalid selection.")
+		return
+	}
+
+	album := items[sel-1]
+	fmt.Println()
+	err = eng.DownloadAlbum(context.Background(), album.ID, flagQuality, flagOutputDir)
+	if err != nil {
+		fmt.Printf("Download failed: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+// runTrackSearch performs a track search and handles interactive download.
+func runTrackSearch(client *api.Client, eng *engine.Engine, query string) {
+	fmt.Printf("Searching tracks for %q...\n\n", query)
+
+	result, err := client.SearchTracks(query, 10)
+	if err != nil {
+		fmt.Printf("Search failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	items := result.Tracks.Items
+	if len(items) == 0 {
+		fmt.Println("No tracks found.")
+		return
+	}
+
+	// Display results
+	fmt.Println("  #  Artist - Title                                       Duration  Quality")
+	fmt.Println(strings.Repeat("─", 78))
+
+	for i, track := range items {
+		title := track.Title
+		if track.Version != "" {
+			title += " (" + track.Version + ")"
+		}
+
+		display := fmt.Sprintf("%s - %s", track.Performer.Name, title)
+		dur := formatDuration(track.Duration)
+		tag := qualityTag(track.HiresStreamable, track.MaximumBitDepth, track.MaximumSamplingRate)
+
+		maxDisplayWidth := 54
+		displayPadded := padRight(display, maxDisplayWidth)
+		durPadded := padLeft(dur, 8)
+
+		fmt.Printf(" %2d  %s %s  [%s]\n", i+1, displayPadded, durPadded, tag)
+	}
+
+	// Interactive selection
+	sel := readSelection(len(items))
+	if sel == -1 {
+		return
+	}
+	if sel == 0 {
+		fmt.Println("Invalid selection.")
+		return
+	}
+
+	track := items[sel-1]
+	trackID := strconv.Itoa(track.ID)
+	fmt.Printf("\nDownloading %s - %s...\n", track.Performer.Name, track.Title)
+
+	err = eng.DownloadTrack(context.Background(), trackID, flagQuality, flagOutputDir, func(current, total int64) {
+		if total > 0 {
+			percent := int(float64(current) / float64(total) * 100)
+			fmt.Printf("\r  Progress: %d%%", percent)
+		}
+	})
+	if err != nil {
+		fmt.Printf("\nDownload failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Println("\n  Done!")
+}
+
+// runArtistSearch performs an artist search, then lists albums for download.
+func runArtistSearch(client *api.Client, eng *engine.Engine, query string) {
+	fmt.Printf("Searching artists for %q...\n\n", query)
+
+	result, err := client.SearchArtists(query, 10)
+	if err != nil {
+		fmt.Printf("Search failed: %v\n", err)
+		os.Exit(1)
+	}
+
+	items := result.Artists.Items
+	if len(items) == 0 {
+		fmt.Println("No artists found.")
+		return
+	}
+
+	// Display artist results
+	fmt.Println("  #  Artist                                                        Albums")
+	fmt.Println(strings.Repeat("─", 78))
+
+	for i, artist := range items {
+		display := artist.Name
+		maxDisplayWidth := 62
+		displayPadded := padRight(display, maxDisplayWidth)
+
+		fmt.Printf(" %2d  %s %5d\n", i+1, displayPadded, artist.AlbumsCount)
+	}
+
+	// Select artist
+	sel := readSelection(len(items))
+	if sel == -1 {
+		return
+	}
+	if sel == 0 {
+		fmt.Println("Invalid selection.")
+		return
+	}
+
+	artist := items[sel-1]
+	fmt.Printf("\nLoading albums for %s...\n\n", artist.Name)
+
+	// Fetch artist's albums
+	artistResp, err := client.GetArtistAlbums(strconv.Itoa(artist.ID), 10, 0)
+	if err != nil {
+		fmt.Printf("Failed to get artist albums: %v\n", err)
+		os.Exit(1)
+	}
+
+	albums := artistResp.Albums.Items
+	if len(albums) == 0 {
+		fmt.Println("No albums found for this artist.")
+		return
+	}
+
+	// Display album list
+	fmt.Println("  #  Album                                                Duration  Quality")
+	fmt.Println(strings.Repeat("─", 78))
+
+	for i, album := range albums {
+		title := album.Title
+		if album.Version != "" {
+			title += " (" + album.Version + ")"
+		}
+
+		dur := formatDuration(album.Duration)
+		tag := qualityTag(album.HiresStreamable, album.MaximumBitDepth, album.MaximumSamplingRate)
+
+		maxDisplayWidth := 54
+		displayPadded := padRight(title, maxDisplayWidth)
+		durPadded := padLeft(dur, 8)
+
+		fmt.Printf(" %2d  %s %s  [%s]\n", i+1, displayPadded, durPadded, tag)
+	}
+
+	// Select album
+	sel = readSelection(len(albums))
+	if sel == -1 {
+		return
+	}
+	if sel == 0 {
+		fmt.Println("Invalid selection.")
+		return
+	}
+
+	album := albums[sel-1]
+	fmt.Println()
+	err = eng.DownloadAlbum(context.Background(), album.ID, flagQuality, flagOutputDir)
+	if err != nil {
+		fmt.Printf("Download failed: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 // setupClient handles all configuration, authentication, and client initialization logic
@@ -434,6 +826,7 @@ func showVersionInfo() {
 
 	// Skip update check for dev builds
 	if version.Version == "dev" || strings.HasPrefix(version.Version, "dev-") {
+		fmt.Println("Skip check for dev version.")
 		return
 	}
 

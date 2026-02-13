@@ -23,18 +23,27 @@ import (
 // Engine is the core download engine that coordinates API calls,
 // file downloads, and metadata tagging operations.
 type Engine struct {
-	Client      *api.Client
-	Tagger      *Tagger
-	Concurrency int // Number of concurrent downloads (default: 3)
+	Client         *api.Client
+	Tagger         *Tagger
+	Concurrency    int  // Number of concurrent downloads (default: 3)
+	EmbedOrigCover bool // Whether to embed original quality cover (default: false, uses large/600px)
 }
 
 // New creates a new Engine instance with the given API client.
 func New(client *api.Client) *Engine {
 	return &Engine{
-		Client:      client,
-		Tagger:      NewTagger(),
-		Concurrency: 3, // Default concurrency
+		Client:         client,
+		Tagger:         NewTagger(),
+		Concurrency:    3,     // Default concurrency
+		EmbedOrigCover: false, // Default to large quality for embedding (Win10 compatibility)
 	}
+}
+
+// SetEmbedOrigCover sets whether to embed original quality cover art.
+// When false (default), uses large/600px quality which is more compatible.
+// When true, embeds the same original quality as saved cover.jpg.
+func (e *Engine) SetEmbedOrigCover(useOrig bool) {
+	e.EmbedOrigCover = useOrig
 }
 
 // SetConcurrency sets the number of concurrent download threads.
@@ -449,12 +458,31 @@ func (e *Engine) DownloadAlbum(ctx context.Context, albumID string, quality int,
 	}
 
 	// 3. Download Cover Art first
-	var coverData []byte
+	// Save original quality locally, but embed large quality by default (Win10 compatibility)
+	var coverDataSave []byte  // Original quality for saving to cover.jpg
+	var coverDataEmbed []byte // Quality for embedding in audio files
 	if album.Image.Large != "" {
 		fmt.Print("[Cover] Downloading... ")
-		coverData, err = e.downloadCover(album.Image.Large)
+
+		// Always save original quality locally
+		coverDataSave, err = e.downloadCoverOriginal(album.Image.Large)
 		if err == nil {
-			_ = e.saveCoverFile(albumDir, coverData)
+			_ = e.saveCoverFile(albumDir, coverDataSave)
+		}
+
+		// For embedding: use original or large based on setting
+		if e.EmbedOrigCover {
+			coverDataEmbed = coverDataSave // Use same original quality
+		} else {
+			// Download large (600px) version for embedding
+			coverDataEmbed, err = e.downloadCoverLarge(album.Image.Large)
+			if err != nil {
+				// Fallback to original if large fails
+				coverDataEmbed = coverDataSave
+			}
+		}
+
+		if coverDataSave != nil {
 			fmt.Println("Done")
 		} else {
 			fmt.Println("Failed (continuing without cover)")
@@ -599,7 +627,7 @@ func (e *Engine) DownloadAlbum(ctx context.Context, albumID string, quality int,
 
 				// Tag the file
 				track := task.Track
-				_ = e.Tagger.WriteTags(trackPath, &track, album, coverData)
+				_ = e.Tagger.WriteTags(trackPath, &track, album, coverDataEmbed)
 
 				// Update state: complete
 				stateMu.Lock()
@@ -742,7 +770,9 @@ const (
 	staticQobuzHost = "https://static.qobuz.com"
 )
 
-func (e *Engine) downloadCover(url string) ([]byte, error) {
+// downloadCoverOriginal downloads the original quality cover image.
+// Used for saving cover.jpg locally.
+func (e *Engine) downloadCoverOriginal(url string) ([]byte, error) {
 	// Try maximum quality (original)
 	maxUrl := strings.Replace(url, "_600.", "_org.", 1)
 
@@ -771,6 +801,41 @@ func (e *Engine) downloadCover(url string) ([]byte, error) {
 		return nil, fmt.Errorf("http error: %s", resp.Status)
 	}
 	return resp.Bytes(), nil
+}
+
+// downloadCoverLarge downloads the large (600px) quality cover image.
+// Used for embedding in audio files (more compatible with older Windows).
+func (e *Engine) downloadCoverLarge(url string) ([]byte, error) {
+	// Ensure we're using the 600px version
+	largeUrl := url
+	if strings.Contains(url, "_org.") {
+		largeUrl = strings.Replace(url, "_org.", "_600.", 1)
+	}
+
+	// Try CDN proxy first if enabled
+	if e.Client.UseProxy {
+		cdnUrl := strings.Replace(largeUrl, staticQobuzHost, staticCDNProxy, 1)
+		resp, err := e.Client.HTTP.R().Get(cdnUrl)
+		if err == nil && !resp.IsErrorState() {
+			return resp.Bytes(), nil
+		}
+	}
+
+	// Download directly
+	resp, err := e.Client.HTTP.R().Get(largeUrl)
+	if err != nil {
+		return nil, err
+	}
+	if resp.IsErrorState() {
+		return nil, fmt.Errorf("http error: %s", resp.Status)
+	}
+	return resp.Bytes(), nil
+}
+
+// downloadCover downloads cover image with quality based on EmbedOrigCover setting.
+// Deprecated: Use downloadCoverOriginal or downloadCoverLarge instead.
+func (e *Engine) downloadCover(url string) ([]byte, error) {
+	return e.downloadCoverOriginal(url)
 }
 
 func (e *Engine) saveCoverFile(dir string, data []byte) error {
@@ -808,9 +873,14 @@ func (e *Engine) DownloadTrack(ctx context.Context, trackID string, quality int,
 	}
 
 	// 5. Download Cover Art (if available)
-	var coverData []byte
+	// For single track download: embed large quality by default
+	var coverDataEmbed []byte
 	if track.Album != nil && track.Album.Image.Large != "" {
-		coverData, _ = e.downloadCover(track.Album.Image.Large)
+		if e.EmbedOrigCover {
+			coverDataEmbed, _ = e.downloadCoverOriginal(track.Album.Image.Large)
+		} else {
+			coverDataEmbed, _ = e.downloadCoverLarge(track.Album.Image.Large)
+		}
 	}
 
 	// 6. Tagging
@@ -822,7 +892,7 @@ func (e *Engine) DownloadTrack(ctx context.Context, trackID string, quality int,
 		track.Album = &api.AlbumMetadata{Title: "Unknown Album"}
 	}
 
-	err = e.Tagger.WriteTags(outputPath, track, track.Album, coverData)
+	err = e.Tagger.WriteTags(outputPath, track, track.Album, coverDataEmbed)
 	if err != nil {
 		// Just warn, don't fail download
 		fmt.Printf("Warning: Failed to tag file: %v\n", err)

@@ -19,7 +19,7 @@ type VorbisComment struct {
 // NewVorbisComment creates a new VorbisComment with a default vendor string.
 func NewVorbisComment() *VorbisComment {
 	return &VorbisComment{
-		Vendor:   "qobuz-dl-go 1.0.0",
+		Vendor:   "qobuz-dl-go",
 		Comments: []string{},
 	}
 }

@@ -36,3 +36,4 @@ account.json
 /release
 /workers
 /update_temp
+/cmd/api-test

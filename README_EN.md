@@ -53,77 +53,20 @@ This project supports CLI (Command Line Interface) mode and has Web service mode
 
 ## 📖 Usage Guide
 
-### 1. Basic Download
+For detailed usage instructions, please refer to the **[Usage Documentation](docs/usage_en.md)**.
 
-Download a track or album by providing the URL or ID:
+Quick Start:
 
 ```bash
 # Download an album
-./qobuz-dl-go dl https://play.qobuz.com/album/j3wq4jjuhznjb
+./qobuz-dl-go dl https://play.qobuz.com/album/xxx
 
-# Download a single track
-./qobuz-dl-go dl https://play.qobuz.com/track/123456
+# Search and download
+./qobuz-dl-go search "Mili"
+
+# View help
+./qobuz-dl-go --help
 ```
-
-### 2. Authentication
-
-The program prioritizes cached credentials from `account.json`. If no cache exists, you can log in via:
-
-**Interactive Login (Recommended)**:
-Simply run the download command - the program will prompt for email and password.
-
-**Command-line Login**:
-```bash
-./qobuz-dl-go dl <url> --email your@email.com --password yourpassword
-```
-
-**Token Login**:
-```bash
-./qobuz-dl-go dl <url> --token <user-auth-token>
-```
-
-### 3. Download Quality
-
-Use `-q` or `--quality` to specify audio quality:
-
-*   `5`: MP3 320kbps
-*   `6`: FLAC Lossless (16-bit / 44.1kHz) **(Default)**
-*   `7`: FLAC 24-bit / 96kHz
-*   `27`: FLAC 24-bit / 192kHz (Highest quality)
-
-```bash
-# Download in highest quality
-./qobuz-dl-go dl <url> -q 27
-```
-
-### 4. Proxy Settings
-
-The program automatically uses proxy settings from system environment variables (`HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`).
-
-You can also manually specify a proxy with `--proxy`:
-
-```bash
-# HTTP Proxy
-./qobuz-dl-go dl <url> --proxy http://127.0.0.1:7890
-
-# SOCKS5 Proxy
-./qobuz-dl-go dl <url> --proxy socks5://127.0.0.1:1080
-```
-
-### 5. CDN Acceleration
-
-CDN acceleration is enabled by default for Chinese mainland access. To disable:
-
-```bash
-./qobuz-dl-go dl <url> --nocdn
-```
-
-### 6. Other Options
-
-*   `--output`, `-o`: Specify output directory (defaults to current directory).
-*   `--nosave`: Don't save credentials to local `account.json`.
-*   `--nocdn`: Disable CDN acceleration, connect directly to Qobuz servers.
-*   `--app-id`, `--app-secret`: Manually specify App ID and Secret (usually not needed - auto-fetched).
 
 ## 📂 Configuration Files
 

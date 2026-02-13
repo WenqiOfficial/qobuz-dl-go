@@ -34,7 +34,6 @@ var (
 	flagThreads    int
 	flagNoCDN      bool   // Disable CDN proxy site
 	flagSearchType string // Search type: album, track, artist
-	flagOrigCover  bool   // Embed original quality cover (default: false, uses 600px for Win10 compatibility)
 )
 
 func main() {
@@ -100,9 +99,6 @@ func main() {
 				eng.SetConcurrency(flagThreads)
 			}
 
-			// Set cover embedding quality
-			eng.SetEmbedOrigCover(flagOrigCover)
-
 			// Default Output Dir from Config if not flagged
 			if flagOutputDir == "." {
 				// We could load config default here, but let's stick to current dir
@@ -140,7 +136,6 @@ func main() {
 	dlCmd.Flags().IntVarP(&flagQuality, "quality", "q", 6, "Quality ID (5=MP3, 6=FLAC 16bit, 7=FLAC 24bit, 27=FLAC 24bit>96)")
 	dlCmd.Flags().StringVarP(&flagOutputDir, "output", "o", ".", "Output directory")
 	dlCmd.Flags().IntVarP(&flagThreads, "threads", "n", 3, "Number of concurrent download threads (1-10)")
-	dlCmd.Flags().BoolVar(&flagOrigCover, "orig-cover", false, "Embed original quality cover art (default: use 600px for Win10 compatibility)")
 
 	// Update Command
 	var updateCmd = &cobra.Command{
@@ -299,7 +294,6 @@ Search types:
 			if flagThreads > 0 {
 				eng.SetConcurrency(flagThreads)
 			}
-			eng.SetEmbedOrigCover(flagOrigCover)
 
 			searchType := strings.ToLower(flagSearchType)
 
@@ -321,7 +315,6 @@ Search types:
 	cmd.Flags().IntVarP(&flagQuality, "quality", "q", 6, "Quality ID (5=MP3, 6=FLAC 16bit, 7=FLAC 24bit, 27=FLAC 24bit>96)")
 	cmd.Flags().StringVarP(&flagOutputDir, "output", "o", ".", "Output directory")
 	cmd.Flags().IntVarP(&flagThreads, "threads", "n", 3, "Number of concurrent download threads (1-10)")
-	cmd.Flags().BoolVar(&flagOrigCover, "orig-cover", false, "Embed original quality cover art (default: use 600px for Win10 compatibility)")
 
 	return cmd
 }

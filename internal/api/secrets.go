@@ -15,6 +15,8 @@ var (
 	bundleURLRegex = regexp.MustCompile(`(?i)<script[^>]+src=['"]([^'"]*bundle[^'"]*\.js)['"]`)
 	// appIDRegex extracts the app ID from the bundle.
 	appIDRegex = regexp.MustCompile(`production:{api:{appId:"(?P<app_id>\d{9})",appSecret:"\w{32}"`)
+	// privateKeyRegex extracts OAuth private_key from bundle.
+	privateKeyRegex = regexp.MustCompile(`privateKey:\s*"(?P<key>[A-Za-z0-9]{6,30})"`)
 	// seedTimezoneRegex finds seed values paired with timezone names.
 	seedTimezoneRegex = regexp.MustCompile(`[a-z]\.initialSeed\("(?P<seed>[\w=]+)",window\.utimezone\.(?P<timezone>[a-z]+)\)`)
 	// infoExtrasRegex finds additional info and extras for secret construction.
@@ -27,6 +29,12 @@ var (
 // proxyURL is optional; pass empty string to use direct connection.
 // useProxySite controls whether to try the CDN proxy first.
 func FetchSecrets(proxyURL string, useProxySite bool) (string, []string, error) {
+	appID, secrets, _, err := FetchSecretsAndPrivateKey(proxyURL, useProxySite)
+	return appID, secrets, err
+}
+
+// FetchSecretsAndPrivateKey scrapes app_id, potential secrets and OAuth private_key.
+func FetchSecretsAndPrivateKey(proxyURL string, useProxySite bool) (string, []string, string, error) {
 	client := req.NewClient()
 	if proxyURL != "" {
 		client.SetProxyURL(proxyURL)
@@ -38,9 +46,9 @@ func FetchSecrets(proxyURL string, useProxySite bool) (string, []string, error) 
 
 	// Try proxy first if enabled
 	if useProxySite {
-		appID, secrets, err := fetchSecretsFromHost(client, playBaseURLProxy)
+		appID, secrets, privateKey, err := fetchSecretsFromHost(client, playBaseURLProxy)
 		if err == nil {
-			return appID, secrets, nil
+			return appID, secrets, privateKey, nil
 		}
 		fmt.Println("CDN proxy failed for secrets, falling back to direct...")
 	}
@@ -50,16 +58,16 @@ func FetchSecrets(proxyURL string, useProxySite bool) (string, []string, error) 
 }
 
 // fetchSecretsFromHost fetches secrets from a specific host.
-func fetchSecretsFromHost(client *req.Client, baseURL string) (string, []string, error) {
+func fetchSecretsFromHost(client *req.Client, baseURL string) (string, []string, string, error) {
 	// 1. Get Login Page to find bundle URL
 	resp, err := client.R().Get(baseURL + "/login")
 	if err != nil {
-		return "", nil, err
+		return "", nil, "", err
 	}
 
 	matches := bundleURLRegex.FindStringSubmatch(resp.String())
 	if len(matches) < 2 {
-		return "", nil, fmt.Errorf("bundle URL not found (status %d)", resp.StatusCode)
+		return "", nil, "", fmt.Errorf("bundle URL not found (status %d)", resp.StatusCode)
 	}
 	bundleURL := matches[1]
 	if !strings.HasPrefix(bundleURL, "http://") && !strings.HasPrefix(bundleURL, "https://") {
@@ -72,16 +80,21 @@ func fetchSecretsFromHost(client *req.Client, baseURL string) (string, []string,
 	// 2. Get Bundle JS
 	resp, err = client.R().Get(bundleURL)
 	if err != nil {
-		return "", nil, err
+		return "", nil, "", err
 	}
 	bundleContent := resp.String()
 
 	// 3. Extract App ID
 	appIDMatches := appIDRegex.FindStringSubmatch(bundleContent)
 	if len(appIDMatches) < 2 {
-		return "", nil, fmt.Errorf("app ID not found in bundle")
+		return "", nil, "", fmt.Errorf("app ID not found in bundle")
 	}
 	appID := appIDMatches[1]
+
+	privateKey := ""
+	if m := privateKeyRegex.FindStringSubmatch(bundleContent); len(m) >= 2 {
+		privateKey = m[1]
+	}
 
 	// 4. Extract Secrets
 	// Logic ported from bundle.py
@@ -148,8 +161,8 @@ func fetchSecretsFromHost(client *req.Client, baseURL string) (string, []string,
 	}
 
 	if len(validSecrets) == 0 {
-		return appID, nil, fmt.Errorf("no valid secrets extracted")
+		return appID, nil, privateKey, fmt.Errorf("no valid secrets extracted")
 	}
 
-	return appID, validSecrets, nil
+	return appID, validSecrets, privateKey, nil
 }

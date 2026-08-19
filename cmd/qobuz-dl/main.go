@@ -17,6 +17,7 @@ import (
 	"github.com/WenqiOfficial/qobuz-dl-go/internal/server"
 	"github.com/WenqiOfficial/qobuz-dl-go/internal/updater"
 	"github.com/WenqiOfficial/qobuz-dl-go/internal/version"
+	"golang.org/x/term"
 )
 
 var (
@@ -664,16 +665,18 @@ func shouldRefreshLogin(providedEmail string, acc *config.Account) bool {
 	return !strings.EqualFold(strings.TrimSpace(acc.Email), strings.TrimSpace(providedEmail))
 }
 
-func isLikelyPreviewTrack(duration int) bool {
-	return duration > 0 && duration <= 45
-}
-
-func confirmContinuePreview(trackTitle string) bool {
-	fmt.Printf("\n[%s] appears to be a 30s preview. Continue downloading? [y/N]: ", trackTitle)
-	reader := bufio.NewReader(os.Stdin)
-	answer, _ := reader.ReadString('\n')
-	answer = strings.TrimSpace(strings.ToLower(answer))
-	return answer == "y" || answer == "yes"
+func readSecret(reader *bufio.Reader, prompt string) (string, error) {
+	fmt.Print(prompt)
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		secret, err := term.ReadPassword(int(os.Stdin.Fd()))
+		fmt.Println()
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(string(secret)), nil
+	}
+	value, err := reader.ReadString('\n')
+	return strings.TrimSpace(value), err
 }
 
 func promptCustomAppCredentials(client *api.Client, userToken string) (*api.Client, string, string, error) {
@@ -681,9 +684,10 @@ func promptCustomAppCredentials(client *api.Client, userToken string) (*api.Clie
 	fmt.Print("App ID: ")
 	customID, _ := reader.ReadString('\n')
 	customID = strings.TrimSpace(customID)
-	fmt.Print("App Secret: ")
-	customSecret, _ := reader.ReadString('\n')
-	customSecret = strings.TrimSpace(customSecret)
+	customSecret, err := readSecret(reader, "App Secret: ")
+	if err != nil {
+		return nil, "", "", fmt.Errorf("failed to read custom App Secret: %w", err)
+	}
 	if customID == "" || customSecret == "" {
 		return nil, "", "", fmt.Errorf("custom App ID and App Secret are required")
 	}
@@ -698,35 +702,25 @@ func promptCustomAppCredentials(client *api.Client, userToken string) (*api.Clie
 	if userToken != "" {
 		customClient.SetUserToken(userToken)
 	}
-	if !customClient.ValidateSecret() {
-		return nil, "", "", fmt.Errorf("custom App ID/App Secret failed validation")
-	}
 	return customClient, customID, customSecret, nil
 }
 
-func saveAccountSnapshot(acc *config.Account) {
+func saveAccountSnapshot(acc *config.Account) error {
 	if flagNoSave {
-		return
+		return nil
 	}
-	if err := config.SaveAccount(acc); err != nil {
-		fmt.Printf("Warning: Failed to save credentials: %v\n", err)
-	}
+	return config.SaveAccount(acc)
 }
 
 // setupClient handles all configuration, authentication, and client initialization logic
 func setupClient(isServer bool) (*api.Client, error) {
-	// 1. Load Configs
 	_, _ = config.LoadConfig() // Currently unused but prepared
 	acc, _ := config.LoadAccount()
 
-	// 2. Resolve Proxy
-	// Priority: Flag > Config(future) > Env(handled by req)
 
-	// 3. Get App ID (without validation yet - need user token first)
 	appID := flagAppID
 	appSecret := flagAppSecret
 
-	// If not provided in flags, check Account
 	if appID == "" && acc.AppID != "" {
 		appID = acc.AppID
 	}
@@ -734,27 +728,27 @@ func setupClient(isServer bool) (*api.Client, error) {
 		appSecret = acc.AppSecret
 	}
 
-	// If appID is missing, fetch it (but don't validate secret yet)
 	needSecretValidation := false
+	var secretsFetchErr error
+	manualCredentials := false
 	if appID == "" {
 		fmt.Println("App ID missing. Fetching from Qobuz...")
 		fetchedID, secrets, err := api.FetchSecrets(flagProxy, !flagNoCDN)
-		if err != nil {
-			return nil, fmt.Errorf("failed to fetch secrets: %w", err)
-		}
 		appID = fetchedID
 		// Store secrets for later validation after login
 		acc.PendingSecrets = secrets
 		needSecretValidation = true
+		secretsFetchErr = err
+		if err != nil && isServer {
+			return nil, fmt.Errorf("failed to fetch secrets: %w", err)
+		}
 	} else if appSecret == "" {
 		// Have appID but no secret
 		needSecretValidation = true
 	}
 
-	// 4. Create Client with current appID/appSecret
 	client := api.NewClient(appID, appSecret)
 
-	// Set CDN proxy preference
 	if flagNoCDN {
 		client.SetUseProxy(false)
 		fmt.Println("CDN proxy disabled, using direct connection")
@@ -766,7 +760,24 @@ func setupClient(isServer bool) (*api.Client, error) {
 		}
 	}
 
-	// 5. Resolve User Auth FIRST (needed for secret validation)
+	if appID == "" && secretsFetchErr != nil {
+		if isServer {
+			return nil, fmt.Errorf("failed to fetch secrets: %w", secretsFetchErr)
+		}
+		fmt.Printf("Automatic credential discovery failed: %v\n", secretsFetchErr)
+		fmt.Println("Please enter custom Qobuz application credentials before login.")
+		customClient, customID, customSecret, customErr := promptCustomAppCredentials(client, "")
+		if customErr != nil {
+			return nil, customErr
+		}
+		client = customClient
+		appID = customID
+		appSecret = customSecret
+		manualCredentials = true
+		needSecretValidation = true
+		secretsFetchErr = nil
+	}
+
 	email := flagEmail
 	if email == "" {
 		email = acc.Email
@@ -803,9 +814,11 @@ func setupClient(isServer bool) (*api.Client, error) {
 				}
 
 				if pass == "" {
-					fmt.Print("Password: ")
-					pass, _ = reader.ReadString('\n')
-					pass = strings.TrimSpace(pass)
+					readPassword, readErr := readSecret(reader, "Password: ")
+					if readErr != nil {
+						return nil, fmt.Errorf("failed to read password: %w", readErr)
+					}
+					pass = readPassword
 				}
 			}
 		}
@@ -819,13 +832,11 @@ func setupClient(isServer bool) (*api.Client, error) {
 
 			userToken = resp.UserAuthToken
 
-			// Save credentials
 			if !flagNoSave {
 				acc.Email = email
 				acc.Password = pass
 				acc.UserToken = resp.UserAuthToken
 				acc.UserID = resp.User.ID
-				saveAccountSnapshot(acc)
 			}
 		} else if !isServer {
 			return nil, fmt.Errorf("authentication required. Provide --token or --email/--password")
@@ -834,7 +845,6 @@ func setupClient(isServer bool) (*api.Client, error) {
 		}
 	}
 
-	// 6. NOW validate/find secret (after we have user token)
 	if needSecretValidation || (appSecret != "" && !client.ValidateSecret()) {
 		if appSecret != "" {
 			fmt.Println("Saved secret is invalid. Refreshing...")
@@ -842,54 +852,85 @@ func setupClient(isServer bool) (*api.Client, error) {
 
 		// Get fresh secrets if we don't have pending ones
 		secrets := acc.PendingSecrets
-		if len(secrets) == 0 {
+		if len(secrets) == 0 && !manualCredentials && secretsFetchErr == nil {
 			fmt.Println("Fetching secrets from Qobuz...")
 			fetchedID, fetchedSecrets, err := api.FetchSecrets(flagProxy, !flagNoCDN)
 			if err != nil {
-				return nil, fmt.Errorf("failed to fetch secrets: %w", err)
-			}
-			appID = fetchedID
-			secrets = fetchedSecrets
-			client = api.NewClient(appID, "")
-			if flagProxy != "" {
-				client.SetProxy(flagProxy)
-			}
-			if userToken != "" {
-				client.SetUserToken(userToken)
+				secretsFetchErr = err
+			} else {
+				appID = fetchedID
+				secrets = fetchedSecrets
+				client = api.NewClient(appID, "")
+				client.SetUseProxy(!flagNoCDN)
+				if flagProxy != "" {
+					if err := client.SetProxy(flagProxy); err != nil {
+						return nil, fmt.Errorf("failed to configure proxy: %w", err)
+					}
+				}
+				if userToken != "" {
+					client.SetUserToken(userToken)
+				}
 			}
 		}
 
-		fmt.Printf("Testing %d secrets for AppID: %s...\n", len(secrets), appID)
-		validSecret, err := client.FindValidSecret(secrets)
-		if err != nil {
-			if isServer {
-				return nil, fmt.Errorf("no valid secret found: %w", err)
+		if manualCredentials {
+			if !client.ValidateSecret() {
+				return nil, fmt.Errorf("custom App ID/App Secret failed validation")
 			}
+			fmt.Println("Custom App ID/App Secret validated successfully!")
+		} else if secretsFetchErr != nil {
+			if isServer {
+				return nil, fmt.Errorf("failed to fetch secrets: %w", secretsFetchErr)
+			}
+			fmt.Printf("Automatic credential discovery failed: %v\n", secretsFetchErr)
 			fmt.Println("Automatically fetched App ID/App Secret are not usable.")
 			fmt.Println("Please enter custom Qobuz application credentials.")
 			customClient, customID, customSecret, customErr := promptCustomAppCredentials(client, userToken)
 			if customErr != nil {
 				return nil, customErr
 			}
+			if !customClient.ValidateSecret() {
+				return nil, fmt.Errorf("custom App ID/App Secret failed validation")
+			}
 			client = customClient
 			appID = customID
 			appSecret = customSecret
 		} else {
-			fmt.Println("Valid secret found!")
-			appSecret = validSecret
-			client.AppSecret = appSecret
+			fmt.Printf("Testing %d secrets for AppID: %s...\n", len(secrets), appID)
+			validSecret, err := client.FindValidSecret(secrets)
+			if err != nil {
+				if isServer {
+					return nil, fmt.Errorf("no valid secret found: %w", err)
+				}
+				fmt.Println("Automatically fetched App ID/App Secret are not usable.")
+				fmt.Println("Please enter custom Qobuz application credentials.")
+				customClient, customID, customSecret, customErr := promptCustomAppCredentials(client, userToken)
+				if customErr != nil {
+					return nil, customErr
+				}
+				if !customClient.ValidateSecret() {
+					return nil, fmt.Errorf("custom App ID/App Secret failed validation")
+				}
+				client = customClient
+				appID = customID
+				appSecret = customSecret
+			} else {
+				fmt.Println("Valid secret found!")
+				appSecret = validSecret
+				client.AppSecret = appSecret
+			}
 		}
 
 		// Clear pending secrets
 		acc.PendingSecrets = nil
 	}
 
-	// 7. Save account
 	if !flagNoSave {
 		acc.AppID = appID
 		acc.AppSecret = appSecret
-		saveAccountSnapshot(acc)
-		if needSecretValidation {
+		if err := saveAccountSnapshot(acc); err != nil {
+			fmt.Printf("Warning: Failed to save credentials: %v\n", err)
+		} else if needSecretValidation {
 			fmt.Println("Credentials saved.")
 		}
 	}

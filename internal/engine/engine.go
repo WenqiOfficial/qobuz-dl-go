@@ -3,6 +3,7 @@
 package engine
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -242,6 +243,29 @@ func makeProgressBar(percent int, width int) string {
 	filled := width * percent / 100
 	empty := width - filled
 	return "[" + strings.Repeat("#", filled) + strings.Repeat("-", empty) + "]"
+}
+
+func isLikelyPreviewTrack(duration int) bool {
+	return duration > 0 && duration <= 45
+}
+
+func confirmContinuePreview(trackTitle string) bool {
+	fmt.Printf("\n[%s] appears to be a 30s preview. Continue downloading? [y/N]: ", trackTitle)
+	reader := bufio.NewReader(os.Stdin)
+	answer, _ := reader.ReadString('\n')
+	answer = strings.TrimSpace(strings.ToLower(answer))
+	return answer == "y" || answer == "yes"
+}
+
+func filterPreviewTasks(tasks []trackTask, confirm func(string) bool) []trackTask {
+	approved := make([]trackTask, 0, len(tasks))
+	for _, task := range tasks {
+		if isLikelyPreviewTrack(task.Track.Duration) && !confirm(task.Track.Title) {
+			continue
+		}
+		approved = append(approved, task)
+	}
+	return approved
 }
 
 // displayState manages the terminal display state.
@@ -507,8 +531,10 @@ func (e *Engine) DownloadAlbum(ctx context.Context, albumID string, quality int,
 		fmt.Printf("[Skip] %d tracks already exist\n\n", skipped)
 	}
 
+	tasks = filterPreviewTasks(tasks, confirmContinuePreview)
+
 	if len(tasks) == 0 {
-		fmt.Println("[Done] All tracks already downloaded!")
+		fmt.Println("[Done] No tracks remain to download.")
 		return nil
 	}
 
@@ -878,6 +904,13 @@ func (e *Engine) DownloadTrack(ctx context.Context, trackID string, quality int,
 	track, err := e.Client.GetTrack(trackID)
 	if err != nil {
 		return fmt.Errorf("failed to get track metadata: %w", err)
+	}
+
+	if isLikelyPreviewTrack(track.Duration) {
+		fmt.Printf("\n[%s] appears to be a 30s preview.\n", track.Title)
+		if !confirmContinuePreview(track.Title) {
+			return fmt.Errorf("preview download cancelled by user")
+		}
 	}
 
 	// 2. Fetch Track URL (with fallback)

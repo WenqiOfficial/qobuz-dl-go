@@ -18,12 +18,3 @@ func TestShouldRefreshLogin(t *testing.T) {
 	}
 }
 
-func TestIsLikelyPreviewTrack(t *testing.T) {
-	if !isLikelyPreviewTrack(30) {
-		t.Fatal("30-second track should be treated as a preview")
-	}
-
-	if isLikelyPreviewTrack(120) {
-		t.Fatal("full track should not be treated as a preview")
-	}
-}

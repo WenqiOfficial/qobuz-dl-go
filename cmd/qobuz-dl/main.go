@@ -651,6 +651,68 @@ func runArtistSearch(client *api.Client, eng *engine.Engine, query string) {
 	}
 }
 
+func shouldRefreshLogin(providedEmail string, acc *config.Account) bool {
+	if strings.TrimSpace(providedEmail) == "" {
+		return false
+	}
+	if acc == nil {
+		return true
+	}
+	if acc.Email == "" {
+		return true
+	}
+	return !strings.EqualFold(strings.TrimSpace(acc.Email), strings.TrimSpace(providedEmail))
+}
+
+func isLikelyPreviewTrack(duration int) bool {
+	return duration > 0 && duration <= 45
+}
+
+func confirmContinuePreview(trackTitle string) bool {
+	fmt.Printf("\n[%s] appears to be a 30s preview. Continue downloading? [y/N]: ", trackTitle)
+	reader := bufio.NewReader(os.Stdin)
+	answer, _ := reader.ReadString('\n')
+	answer = strings.TrimSpace(strings.ToLower(answer))
+	return answer == "y" || answer == "yes"
+}
+
+func promptCustomAppCredentials(client *api.Client, userToken string) (*api.Client, string, string, error) {
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Print("App ID: ")
+	customID, _ := reader.ReadString('\n')
+	customID = strings.TrimSpace(customID)
+	fmt.Print("App Secret: ")
+	customSecret, _ := reader.ReadString('\n')
+	customSecret = strings.TrimSpace(customSecret)
+	if customID == "" || customSecret == "" {
+		return nil, "", "", fmt.Errorf("custom App ID and App Secret are required")
+	}
+
+	customClient := api.NewClient(customID, customSecret)
+	customClient.SetUseProxy(client.UseProxy)
+	if flagProxy != "" {
+		if err := customClient.SetProxy(flagProxy); err != nil {
+			return nil, "", "", fmt.Errorf("failed to configure proxy: %w", err)
+		}
+	}
+	if userToken != "" {
+		customClient.SetUserToken(userToken)
+	}
+	if !customClient.ValidateSecret() {
+		return nil, "", "", fmt.Errorf("custom App ID/App Secret failed validation")
+	}
+	return customClient, customID, customSecret, nil
+}
+
+func saveAccountSnapshot(acc *config.Account) {
+	if flagNoSave {
+		return
+	}
+	if err := config.SaveAccount(acc); err != nil {
+		fmt.Printf("Warning: Failed to save credentials: %v\n", err)
+	}
+}
+
 // setupClient handles all configuration, authentication, and client initialization logic
 func setupClient(isServer bool) (*api.Client, error) {
 	// 1. Load Configs
@@ -705,6 +767,15 @@ func setupClient(isServer bool) (*api.Client, error) {
 	}
 
 	// 5. Resolve User Auth FIRST (needed for secret validation)
+	email := flagEmail
+	if email == "" {
+		email = acc.Email
+	}
+	if shouldRefreshLogin(email, acc) {
+		acc.UserToken = ""
+		flagToken = ""
+	}
+
 	userToken := flagToken
 	if userToken == "" && acc.UserToken != "" {
 		userToken = acc.UserToken
@@ -714,12 +785,8 @@ func setupClient(isServer bool) (*api.Client, error) {
 		client.SetUserToken(userToken)
 	} else {
 		// Need to login first
-		email := flagEmail
 		pass := flagPassword
 
-		if email == "" {
-			email = acc.Email
-		}
 		if pass == "" {
 			pass = acc.Password
 		}
@@ -758,6 +825,7 @@ func setupClient(isServer bool) (*api.Client, error) {
 				acc.Password = pass
 				acc.UserToken = resp.UserAuthToken
 				acc.UserID = resp.User.ID
+				saveAccountSnapshot(acc)
 			}
 		} else if !isServer {
 			return nil, fmt.Errorf("authentication required. Provide --token or --email/--password")
@@ -794,12 +862,23 @@ func setupClient(isServer bool) (*api.Client, error) {
 		fmt.Printf("Testing %d secrets for AppID: %s...\n", len(secrets), appID)
 		validSecret, err := client.FindValidSecret(secrets)
 		if err != nil {
-			return nil, fmt.Errorf("no valid secret found: %w", err)
+			if isServer {
+				return nil, fmt.Errorf("no valid secret found: %w", err)
+			}
+			fmt.Println("Automatically fetched App ID/App Secret are not usable.")
+			fmt.Println("Please enter custom Qobuz application credentials.")
+			customClient, customID, customSecret, customErr := promptCustomAppCredentials(client, userToken)
+			if customErr != nil {
+				return nil, customErr
+			}
+			client = customClient
+			appID = customID
+			appSecret = customSecret
+		} else {
+			fmt.Println("Valid secret found!")
+			appSecret = validSecret
+			client.AppSecret = appSecret
 		}
-
-		fmt.Println("Valid secret found!")
-		appSecret = validSecret
-		client.AppSecret = appSecret
 
 		// Clear pending secrets
 		acc.PendingSecrets = nil
@@ -809,9 +888,8 @@ func setupClient(isServer bool) (*api.Client, error) {
 	if !flagNoSave {
 		acc.AppID = appID
 		acc.AppSecret = appSecret
-		if err := config.SaveAccount(acc); err != nil {
-			fmt.Printf("Warning: Failed to save account: %v\n", err)
-		} else if needSecretValidation {
+		saveAccountSnapshot(acc)
+		if needSecretValidation {
 			fmt.Println("Credentials saved.")
 		}
 	}

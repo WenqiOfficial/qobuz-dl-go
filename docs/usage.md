@@ -98,7 +98,19 @@
 *   `--threads`, `-n`: 并发下载线程数（1-10，默认 3）。
 *   `--nosave`: 不将本次登录的凭证保存到本地 `account.json`。
 *   `--nocdn`: 禁用 CDN 加速，直连 Qobuz 服务器。
+*   `--noproxy`: 禁用内置反向代理，等价于 `--nocdn`；`--proxy` 仍用于指定用户自己的传输代理。
 *   `--app-id`, `--app-secret`: 手动指定 App 已知的 ID 和密钥（通常不需要，程序会自动获取）。
+
+显式指定 `--email` 会强制重新登录，即使本地已有同一邮箱的有效 Token。
+
+诊断认证状态：
+
+```bash
+./qobuz-dl-go auth doctor
+./qobuz-dl-go auth doctor --json
+```
+
+`auth doctor` 只读检查 App ID/Secret 与 Token，不会提交密码或改写 `account.json`。
 
 ## 9. 自动更新
 

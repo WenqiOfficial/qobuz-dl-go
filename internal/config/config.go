@@ -3,9 +3,17 @@
 package config
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+)
+
+const (
+	obfuscationPrefix = "obf:v1:"
+	obfuscationKey    = "qobuzdlgogogo"
 )
 
 // Config holds application-level settings.
@@ -20,8 +28,10 @@ type Config struct {
 // Account holds user authentication credentials.
 type Account struct {
 	Email          string   `json:"email"`
-	Password       string   `json:"password"` // Note: stored in plaintext, consider encrypting
+	Password       string   `json:"password"`
 	UserToken      string   `json:"user_auth_token"`
+	TokenAppID     string   `json:"token_app_id,omitempty"`
+	TokenAppSecret string   `json:"token_app_secret,omitempty"`
 	AppID          string   `json:"app_id"`
 	AppSecret      string   `json:"app_secret"`
 	UserID         int      `json:"user_id"`
@@ -79,18 +89,74 @@ func LoadAccount() (*Account, error) {
 	if err != nil {
 		return nil, err
 	}
-	var acc Account
-	if err := json.Unmarshal(data, &acc); err != nil {
-		return nil, err
-	}
-	return &acc, nil
+	return unmarshalAccount(data)
 }
 
 // SaveAccount persists account credentials to disk with restricted permissions (0600).
 func SaveAccount(acc *Account) error {
-	data, err := json.MarshalIndent(acc, "", "  ")
+	data, err := marshalAccount(acc)
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(GetAccountPath(), data, 0600)
+}
+
+func marshalAccount(acc *Account) ([]byte, error) {
+	if acc == nil {
+		return nil, fmt.Errorf("account is nil")
+	}
+	stored := *acc
+	stored.Password = obfuscateCredential(stored.Password)
+	stored.UserToken = obfuscateCredential(stored.UserToken)
+	stored.TokenAppSecret = obfuscateCredential(stored.TokenAppSecret)
+	stored.AppSecret = obfuscateCredential(stored.AppSecret)
+	return json.MarshalIndent(&stored, "", "  ")
+}
+
+func unmarshalAccount(data []byte) (*Account, error) {
+	var acc Account
+	if err := json.Unmarshal(data, &acc); err != nil {
+		return nil, err
+	}
+	var err error
+	if acc.Password, err = deobfuscateCredential(acc.Password); err != nil {
+		return nil, fmt.Errorf("decode account password: %w", err)
+	}
+	if acc.UserToken, err = deobfuscateCredential(acc.UserToken); err != nil {
+		return nil, fmt.Errorf("decode account user token: %w", err)
+	}
+	if acc.AppSecret, err = deobfuscateCredential(acc.AppSecret); err != nil {
+		return nil, fmt.Errorf("decode account app secret: %w", err)
+	}
+	if acc.TokenAppSecret, err = deobfuscateCredential(acc.TokenAppSecret); err != nil {
+		return nil, fmt.Errorf("decode token app secret: %w", err)
+	}
+	return &acc, nil
+}
+
+func obfuscateCredential(value string) string {
+	if value == "" {
+		return ""
+	}
+	data := []byte(value)
+	key := []byte(obfuscationKey)
+	for index := range data {
+		data[index] ^= key[index%len(key)]
+	}
+	return obfuscationPrefix + base64.StdEncoding.EncodeToString(data)
+}
+
+func deobfuscateCredential(value string) (string, error) {
+	if value == "" || !strings.HasPrefix(value, obfuscationPrefix) {
+		return value, nil
+	}
+	data, err := base64.StdEncoding.DecodeString(value[len(obfuscationPrefix):])
+	if err != nil {
+		return "", fmt.Errorf("invalid obfuscated credential: %w", err)
+	}
+	key := []byte(obfuscationKey)
+	for index := range data {
+		data[index] ^= key[index%len(key)]
+	}
+	return string(data), nil
 }

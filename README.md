@@ -30,7 +30,8 @@
     *   支持本地保存凭证 (`account.json`)。
     *   提供 `--nosave` 选项以保护隐私。
 *   **🌐 网络支持**：全面支持 HTTP / HTTPS / SOCKS5 代理。
-*   **🚀 CDN 加速**：内置国内 CDN 加速，优化访问体验（可通过 `--nocdn` 禁用）。
+*   **🚀 CDN 加速**：内置国内 CDN 加速，优化访问体验（可通过 `--nocdn` 或 `--noproxy` 禁用）。
+*   **🩺 认证诊断**：`auth doctor` 检查 App ID、Secret 与 Token，不输出敏感值。
 
 ## 🛠️ 安装与构建
 
@@ -64,6 +65,9 @@
 # 搜索并下载
 ./qobuz-dl-go search "Mili"
 
+# 诊断认证状态
+./qobuz-dl-go auth doctor
+
 # 查看帮助
 ./qobuz-dl-go --help
 ```
@@ -72,7 +76,7 @@
 
 程序运行后会在同级目录下生成以下文件：
 
-*   `account.json`: 存储加密后的用户凭证（Token、UserID 等）。
+*   `account.json`: 存储本地混淆后的用户凭证（Token、UserID 等）。
 *   `config.json`: (计划中) 用于存储默认下载路径、质量偏好等全局配置。
 
 ## ⚠️ 免责声明

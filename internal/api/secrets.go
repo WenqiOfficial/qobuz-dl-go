@@ -3,7 +3,9 @@ package api
 import (
 	"encoding/base64"
 	"fmt"
+	"os"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/imroc/req/v3"
@@ -14,14 +16,21 @@ var (
 	// bundleURLRegex finds the bundle.js URL in the login page.
 	bundleURLRegex = regexp.MustCompile(`(?i)<script[^>]+src=['"]([^'"]*bundle[^'"]*\.js)['"]`)
 	// appIDRegex extracts the app ID from the bundle.
-	appIDRegex = regexp.MustCompile(`production:{api:{appId:"(?P<app_id>\d{9})",appSecret:"\w{32}"`)
+	appIDRegex         = regexp.MustCompile(`production:\s*\{\s*api\s*:\s*\{\s*appId\s*:\s*["'](?P<app_id>\d{9})["']\s*,\s*appSecret\s*:\s*["']\w{32}["']`)
+	appIDFallbackRegex = regexp.MustCompile(`appId\s*:\s*["'](?P<app_id>[^"']+)["']\s*,\s*appSecret\s*:`)
 	// privateKeyRegex extracts OAuth private_key from bundle.
 	privateKeyRegex = regexp.MustCompile(`privateKey:\s*"(?P<key>[A-Za-z0-9]{6,30})"`)
 	// seedTimezoneRegex finds seed values paired with timezone names.
 	seedTimezoneRegex = regexp.MustCompile(`[a-z]\.initialSeed\("(?P<seed>[\w=]+)",window\.utimezone\.(?P<timezone>[a-z]+)\)`)
 	// infoExtrasRegex finds additional info and extras for secret construction.
-	infoExtrasRegex = regexp.MustCompile(`name:"\w+/(?P<timezone>[a-zA-Z]+)",info:"(?P<info>[\w=]+)",extras:"(?P<extras>[\w=]+)"`)
+	infoExtrasRegex = regexp.MustCompile(`name:"\w+/(?P<timezone>[a-zA-Z]+)",info:"(?P<info>[\w=]*)",extras:"(?P<extras>[\w=]*)"`)
 )
+
+// SecretCandidate is a decoded app secret together with its bundle timezone.
+type SecretCandidate struct {
+	Timezone string
+	Value    string
+}
 
 // FetchSecrets scrapes the App ID and potential secrets from the Qobuz web player.
 // It fetches the login page, locates the bundle.js, and extracts credentials.
@@ -33,8 +42,24 @@ func FetchSecrets(proxyURL string, useProxySite bool) (string, []string, error) 
 	return appID, secrets, err
 }
 
+// FetchSecretCandidates scrapes app credentials and keeps timezone metadata.
+func FetchSecretCandidates(proxyURL string, useProxySite bool) (string, []SecretCandidate, error) {
+	appID, candidates, _, err := FetchSecretCandidatesAndPrivateKey(proxyURL, useProxySite)
+	return appID, candidates, err
+}
+
 // FetchSecretsAndPrivateKey scrapes app_id, potential secrets and OAuth private_key.
 func FetchSecretsAndPrivateKey(proxyURL string, useProxySite bool) (string, []string, string, error) {
+	appID, candidates, privateKey, err := FetchSecretCandidatesAndPrivateKey(proxyURL, useProxySite)
+	secrets := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		secrets = append(secrets, candidate.Value)
+	}
+	return appID, secrets, privateKey, err
+}
+
+// FetchSecretCandidatesAndPrivateKey scrapes app_id, ordered secrets and OAuth private_key.
+func FetchSecretCandidatesAndPrivateKey(proxyURL string, useProxySite bool) (string, []SecretCandidate, string, error) {
 	client := req.NewClient()
 	if proxyURL != "" {
 		client.SetProxyURL(proxyURL)
@@ -46,19 +71,28 @@ func FetchSecretsAndPrivateKey(proxyURL string, useProxySite bool) (string, []st
 
 	// Try proxy first if enabled
 	if useProxySite {
-		appID, secrets, privateKey, err := fetchSecretsFromHost(client, playBaseURLProxy)
+		appID, secrets, privateKey, err := fetchSecretCandidatesFromHost(client, playBaseURLProxy)
 		if err == nil {
 			return appID, secrets, privateKey, nil
 		}
-		fmt.Println("CDN proxy failed for secrets, falling back to direct...")
+		fmt.Fprintln(os.Stderr, "CDN proxy failed for secrets, falling back to direct...")
 	}
 
 	// Direct connection
-	return fetchSecretsFromHost(client, playBaseURL)
+	return fetchSecretCandidatesFromHost(client, playBaseURL)
 }
 
 // fetchSecretsFromHost fetches secrets from a specific host.
 func fetchSecretsFromHost(client *req.Client, baseURL string) (string, []string, string, error) {
+	appID, candidates, privateKey, err := fetchSecretCandidatesFromHost(client, baseURL)
+	secrets := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		secrets = append(secrets, candidate.Value)
+	}
+	return appID, secrets, privateKey, err
+}
+
+func fetchSecretCandidatesFromHost(client *req.Client, baseURL string) (string, []SecretCandidate, string, error) {
 	// 1. Get Login Page to find bundle URL
 	resp, err := client.R().Get(baseURL + "/login")
 	if err != nil {
@@ -84,12 +118,10 @@ func fetchSecretsFromHost(client *req.Client, baseURL string) (string, []string,
 	}
 	bundleContent := resp.String()
 
-	// 3. Extract App ID
-	appIDMatches := appIDRegex.FindStringSubmatch(bundleContent)
-	if len(appIDMatches) < 2 {
+	appID := extractAppID(bundleContent)
+	if appID == "" {
 		return "", nil, "", fmt.Errorf("app ID not found in bundle")
 	}
-	appID := appIDMatches[1]
 
 	privateKey := ""
 	if m := privateKeyRegex.FindStringSubmatch(bundleContent); len(m) >= 2 {
@@ -134,8 +166,24 @@ func fetchSecretsFromHost(client *req.Client, baseURL string) (string, []string,
 		}
 	}
 
-	var validSecrets []string
-	for _, parts := range secretsMap {
+	timezones = timezones[:0]
+	for timezone := range secretsMap {
+		timezones = append(timezones, timezone)
+	}
+	sort.Slice(timezones, func(i, j int) bool {
+		if timezones[i] == "berlin" {
+			return true
+		}
+		if timezones[j] == "berlin" {
+			return false
+		}
+		return timezones[i] < timezones[j]
+	})
+
+	var validSecrets []SecretCandidate
+	seenSecrets := make(map[string]struct{})
+	for _, timezone := range timezones {
+		parts := secretsMap[timezone]
 		if len(parts) != 3 {
 			// Needs seed, info, extras
 			continue
@@ -152,12 +200,19 @@ func fetchSecretsFromHost(client *req.Client, baseURL string) (string, []string,
 
 		decodedBytes, err := base64.StdEncoding.DecodeString(toDecode)
 		if err != nil {
-			fmt.Printf("Base64 decode failed for %s: %v\n", parts[0], err)
+			fmt.Fprintf(os.Stderr, "Base64 decode failed for %s: %v\n", timezone, err)
 			continue
 		}
 
 		secret := string(decodedBytes)
-		validSecrets = append(validSecrets, secret)
+		if secret == "" {
+			continue
+		}
+		if _, exists := seenSecrets[secret]; exists {
+			continue
+		}
+		seenSecrets[secret] = struct{}{}
+		validSecrets = append(validSecrets, SecretCandidate{Timezone: timezone, Value: secret})
 	}
 
 	if len(validSecrets) == 0 {
@@ -165,4 +220,14 @@ func fetchSecretsFromHost(client *req.Client, baseURL string) (string, []string,
 	}
 
 	return appID, validSecrets, privateKey, nil
+}
+
+func extractAppID(bundleContent string) string {
+	for _, expression := range []*regexp.Regexp{appIDRegex, appIDFallbackRegex} {
+		matches := expression.FindStringSubmatch(bundleContent)
+		if len(matches) >= 2 {
+			return matches[1]
+		}
+	}
+	return ""
 }

@@ -7,8 +7,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
+	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/imroc/req/v3"
@@ -30,6 +33,7 @@ type Client struct {
 	UserToken   string      // User authentication token
 	UseProxy    bool        // Whether to use proxy site (default true)
 	currentBase string      // Current base URL in use
+	directBase  string      // Direct API base URL used for request-scoped fallback
 }
 
 // NewClient creates a new Qobuz API client with the given credentials.
@@ -37,10 +41,11 @@ type Client struct {
 // By default, it tries the proxy site first.
 func NewClient(appID, appSecret string) *Client {
 	c := &Client{
-		AppID:     appID,
-		AppSecret: appSecret,
-		HTTP:      req.NewClient(),
-		UseProxy:  true,
+		AppID:      appID,
+		AppSecret:  appSecret,
+		HTTP:       req.NewClient(),
+		UseProxy:   true,
+		directBase: BaseURLDirect,
 	}
 
 	// Start with proxy by default
@@ -71,15 +76,14 @@ func (c *Client) SetUseProxy(useProxy bool) {
 	c.HTTP.SetBaseURL(c.currentBase)
 }
 
+// SetDirectBaseURL overrides the direct API endpoint, primarily for isolated tests.
+func (c *Client) SetDirectBaseURL(baseURL string) {
+	c.directBase = strings.TrimRight(baseURL, "/")
+}
+
 // GetCurrentBaseURL returns the current API base URL.
 func (c *Client) GetCurrentBaseURL() string {
 	return c.currentBase
-}
-
-// switchToDirect switches from proxy to direct API.
-func (c *Client) switchToDirect() {
-	c.currentBase = BaseURLDirect
-	c.HTTP.SetBaseURL(c.currentBase)
 }
 
 // SetProxy configures the HTTP client to use the specified proxy URL.
@@ -104,39 +108,81 @@ func (c *Client) SetProxy(proxyURL string) error {
 // SetUserToken sets the user authentication token for subsequent requests.
 func (c *Client) SetUserToken(token string) {
 	c.UserToken = token
+	if token == "" {
+		c.HTTP.Headers.Del("X-User-Auth-Token")
+		return
+	}
 	c.HTTP.SetCommonHeader("X-User-Auth-Token", token)
 }
 
 // Login performs the user login and stores the UserAuthToken.
 // If UseProxy is true, tries proxy first then falls back to direct.
 func (c *Client) Login(email, password string) (*LoginResponse, error) {
-	result, err := c.loginInternal(email, password)
-	if err != nil && c.UseProxy && c.currentBase == BaseURLProxy {
-		// Fallback to direct API
-		fmt.Println("Proxy failed, falling back to direct API...")
-		c.switchToDirect()
-		return c.loginInternal(email, password)
+	return c.loginWithParams(map[string]string{
+		"email":    email,
+		"password": password,
+		"app_id":   c.AppID,
+	})
+}
+
+// LoginWithToken validates a user token and refreshes the authenticated session.
+func (c *Client) LoginWithToken(token string) (*LoginResponse, error) {
+	result, err := c.loginWithParams(map[string]string{
+		"user_auth_token": token,
+		"app_id":          c.AppID,
+	})
+	if err != nil {
+		var statusErr *StatusError
+		if errors.As(err, &statusErr) && statusErr.Code == http.StatusUnauthorized {
+			if statusErr.Kind == ErrorKindBadCredentials {
+				statusErr.Kind = ErrorKindTokenInvalid
+			}
+			c.SetUserToken("")
+		}
 	}
 	return result, err
 }
 
 func (c *Client) loginInternal(email, password string) (*LoginResponse, error) {
-	var result LoginResponse
-	resp, err := c.HTTP.R().
-		SetQueryParams(map[string]string{
-			"email":    email,
-			"password": password,
-			"app_id":   c.AppID,
-		}).
-		SetSuccessResult(&result).
-		Get("user/login")
+	return c.loginAtBase(map[string]string{
+		"email":    email,
+		"password": password,
+		"app_id":   c.AppID,
+	}, "")
+}
+
+func (c *Client) loginWithParams(params map[string]string) (*LoginResponse, error) {
+	result, err := c.loginAtBase(params, "")
+	if err != nil && c.UseProxy && c.currentBase == BaseURLProxy && isTransportOrServerError(err) {
+		fmt.Fprintln(os.Stderr, "Proxy failed, trying direct API for this login request...")
+		return c.loginAtBase(params, c.directBase)
+	}
+	return result, err
+}
+
+func (c *Client) loginAtBase(params map[string]string, baseURL string) (*LoginResponse, error) {
+	request := c.HTTP.R().SetQueryParams(params)
+	endpoint := "user/login"
+	if baseURL != "" {
+		endpoint = strings.TrimRight(baseURL, "/") + "/user/login"
+	}
+
+	resp, err := request.Get(endpoint)
 
 	if err != nil {
 		return nil, err
 	}
 
 	if resp.IsErrorState() {
-		return nil, fmt.Errorf("login failed: %s", resp.String())
+		return nil, responseError(resp, "user/login")
+	}
+
+	var result LoginResponse
+	if err := resp.UnmarshalJson(&result); err != nil {
+		return nil, invalidResponseError("user/login", "login returned a non-JSON response")
+	}
+	if strings.TrimSpace(result.UserAuthToken) == "" {
+		return nil, invalidResponseError("user/login", "login response did not contain a user auth token")
 	}
 
 	c.SetUserToken(result.UserAuthToken)
@@ -144,42 +190,69 @@ func (c *Client) loginInternal(email, password string) (*LoginResponse, error) {
 	return &result, nil
 }
 
+type SecretStatus int
+
+const (
+	SecretStatusUnknown SecretStatus = iota
+	SecretStatusValid
+	SecretStatusInvalid
+)
+
 // ValidateSecret checks if the current AppSecret is valid by testing the API.
 // Returns true if the secret works, false otherwise.
 func (c *Client) ValidateSecret() bool {
-	if c.AppSecret == "" {
-		return false
-	}
-	// Test track ID: Daft Punk - Technologic (public track for validation)
-	testTrackID := "5966783"
-	formatID := 5 // MP3 quality for quick validation
+	status, _ := c.ValidateSecretDetailed()
+	return status == SecretStatusValid
+}
 
-	_, err := c.GetTrackURL(testTrackID, formatID)
-	return err == nil
+// ValidateSecretDetailed distinguishes a bad signature from auth and transport failures.
+func (c *Client) ValidateSecretDetailed() (SecretStatus, error) {
+	if c.AppSecret == "" {
+		return SecretStatusInvalid, fmt.Errorf("app secret is empty: %w", ErrInvalidSecret)
+	}
+
+	_, err := c.GetTrackURL("5966783", 5)
+	if err == nil {
+		return SecretStatusValid, nil
+	}
+
+	var statusErr *StatusError
+	if errors.As(err, &statusErr) {
+		switch statusErr.Code {
+		case http.StatusOK, http.StatusForbidden:
+			return SecretStatusValid, nil
+		case http.StatusUnauthorized:
+			if statusErr.Kind == ErrorKindAppIDRejected {
+				return SecretStatusUnknown, err
+			}
+			return SecretStatusValid, nil
+		case http.StatusBadRequest:
+			if statusErr.Kind == ErrorKindInvalidSecret {
+				return SecretStatusInvalid, err
+			}
+		}
+	}
+	return SecretStatusUnknown, err
 }
 
 // FindValidSecret iterates through potential secrets and finds one that works.
 // It validates each secret by attempting to sign a request for a known test track.
 // Returns the first valid secret found, or an error if none are valid.
 func (c *Client) FindValidSecret(secrets []string) (string, error) {
-	// Test track ID: Daft Punk - Technologic (public track for validation)
-	testTrackID := "5966783"
-	formatID := 5 // MP3 quality for quick validation
-
 	for _, sec := range secrets {
-		// Temporary set secret
 		c.AppSecret = sec
-
-		// Try to get URL
-		_, err := c.GetTrackURL(testTrackID, formatID)
-		if err == nil {
-			// Found it!
+		status, err := c.ValidateSecretDetailed()
+		if status == SecretStatusValid {
 			return sec, nil
+		}
+		if status == SecretStatusUnknown {
+			c.AppSecret = ""
+			return "", fmt.Errorf("secret validation was inconclusive: %w", err)
 		}
 	}
 
 	c.AppSecret = ""
-	return "", fmt.Errorf("no valid secret found in provided list")
+	return "", fmt.Errorf("no valid secret found in provided list: %w", ErrInvalidSecret)
 }
 
 // GetTrackURL retrieves the download URL for a track with the specified quality.
@@ -214,7 +287,7 @@ func (c *Client) GetTrackURL(trackID string, formatID int) (*TrackURLResponse, e
 	}
 
 	if resp.IsErrorState() {
-		return nil, errors.New(resp.String())
+		return nil, responseError(resp, "track/getFileUrl")
 	}
 
 	return &result, nil
@@ -261,6 +334,9 @@ func (c *Client) GetTrackURLWithFallback(trackID string, requestedFormatID int) 
 			return info, q, nil
 		}
 		lastErr = err
+		if preventsQualityFallback(err) {
+			return nil, 0, err
+		}
 	}
 
 	return nil, 0, fmt.Errorf("all quality fallbacks failed (tried %v): %w", qualities, lastErr)
@@ -279,7 +355,7 @@ func (c *Client) GetTrack(trackID string) (*TrackMetadata, error) {
 	}
 
 	if resp.IsErrorState() {
-		return nil, errors.New(resp.String())
+		return nil, responseError(resp, "track/get")
 	}
 
 	return &result, nil
@@ -298,7 +374,7 @@ func (c *Client) GetAlbum(albumID string) (*AlbumMetadata, error) {
 	}
 
 	if resp.IsErrorState() {
-		return nil, errors.New(resp.String())
+		return nil, responseError(resp, "album/get")
 	}
 
 	return &result, nil
@@ -319,7 +395,7 @@ func (c *Client) SearchAlbums(query string, limit int) (*SearchAlbumsResponse, e
 		return nil, err
 	}
 	if resp.IsErrorState() {
-		return nil, errors.New(resp.String())
+		return nil, responseError(resp, "album/search")
 	}
 	return &result, nil
 }
@@ -339,7 +415,7 @@ func (c *Client) SearchTracks(query string, limit int) (*SearchTracksResponse, e
 		return nil, err
 	}
 	if resp.IsErrorState() {
-		return nil, errors.New(resp.String())
+		return nil, responseError(resp, "track/search")
 	}
 	return &result, nil
 }
@@ -359,7 +435,7 @@ func (c *Client) SearchArtists(query string, limit int) (*SearchArtistsResponse,
 		return nil, err
 	}
 	if resp.IsErrorState() {
-		return nil, errors.New(resp.String())
+		return nil, responseError(resp, "artist/search")
 	}
 	return &result, nil
 }
@@ -381,7 +457,7 @@ func (c *Client) GetArtistAlbums(artistID string, limit, offset int) (*ArtistAlb
 		return nil, err
 	}
 	if resp.IsErrorState() {
-		return nil, errors.New(resp.String())
+		return nil, responseError(resp, "artist/get")
 	}
 	return &result, nil
 }

@@ -12,12 +12,10 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/WenqiOfficial/qobuz-dl-go/internal/api"
-	"github.com/WenqiOfficial/qobuz-dl-go/internal/config"
 	"github.com/WenqiOfficial/qobuz-dl-go/internal/engine"
 	"github.com/WenqiOfficial/qobuz-dl-go/internal/server"
 	"github.com/WenqiOfficial/qobuz-dl-go/internal/updater"
 	"github.com/WenqiOfficial/qobuz-dl-go/internal/version"
-	"golang.org/x/term"
 )
 
 var (
@@ -652,24 +650,6 @@ func runArtistSearch(client *api.Client, eng *engine.Engine, query string) {
 		fmt.Printf("Download failed: %v\n", err)
 		os.Exit(1)
 	}
-}
-
-func shouldRefreshLogin(providedEmail string, acc *config.Account) bool {
-	return strings.TrimSpace(providedEmail) != ""
-}
-
-func readSecret(reader *bufio.Reader, prompt string) (string, error) {
-	fmt.Print(prompt)
-	if term.IsTerminal(int(os.Stdin.Fd())) {
-		secret, err := term.ReadPassword(int(os.Stdin.Fd()))
-		fmt.Println()
-		if err != nil {
-			return "", err
-		}
-		return strings.TrimSpace(string(secret)), nil
-	}
-	value, err := reader.ReadString('\n')
-	return strings.TrimSpace(value), err
 }
 
 // showVersionInfo displays version information and checks for updates

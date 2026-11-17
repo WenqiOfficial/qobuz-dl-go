@@ -45,23 +45,14 @@ func runAuthDoctor(output io.Writer, jsonOutput bool) error {
 	add := func(step, status, detail, suggestion string) {
 		reports = append(reports, authDiagnostic{Step: step, Status: status, Detail: detail, Suggestion: suggestion})
 	}
-	if strings.TrimSpace(flagEmail) != "" && strings.TrimSpace(flagToken) != "" {
-		err := fmt.Errorf("--email and --token are mutually exclusive")
-		add("authentication", "error", err.Error(), "Use --token to inspect an existing token, or log in without --token.")
-		return writeAuthDiagnostics(output, jsonOutput, reports, err)
-	}
-
-	acc, err := loadAccount()
-	if err != nil {
+	manager := newAuthManager(authOptions(true, true))
+	if err := manager.LoadAccount(); err != nil {
 		add("account", "error", fmt.Sprintf("Cannot read %s: %v", config.GetAccountPath(), err), "Repair or move the invalid account file, then retry.")
 		return writeAuthDiagnostics(output, jsonOutput, reports, err)
 	}
-	if acc == nil {
-		acc = &config.Account{}
-	}
 	add("account", "ok", fmt.Sprintf("Loaded %s", config.GetAccountPath()), "")
 
-	client, err := setupAppCredentials(acc, setupOptions{quiet: true})
+	client, acc, err := manager.PrepareDiagnostics()
 	if err != nil {
 		status, suggestion := diagnoseAuthError(err)
 		add("authentication", status, err.Error(), suggestion)
@@ -80,7 +71,7 @@ func runAuthDoctor(output io.Writer, jsonOutput bool) error {
 		return writeAuthDiagnostics(output, jsonOutput, reports, nil)
 	}
 
-	response, tokenErr := validateTokenWithAppAffinity(client, acc, userToken)
+	response, tokenErr := manager.ValidateUserToken(userToken)
 	if tokenErr != nil {
 		status, suggestion := diagnoseAuthError(tokenErr)
 		add("token", status, tokenErr.Error(), suggestion)

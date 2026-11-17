@@ -98,7 +98,21 @@ Use `--threads` or `-n` to set the number of concurrent download threads (defaul
 *   `--threads`, `-n`: Number of concurrent download threads (1-10, default 3).
 *   `--nosave`: Don't save credentials to local `account.json`.
 *   `--nocdn`: Disable CDN acceleration, connect directly to Qobuz servers.
+*   `--noproxy`: Disable the built-in reverse proxy, equivalent to `--nocdn`; `--proxy` still configures your own transport proxy.
 *   `--app-id`, `--app-secret`: Manually specify App ID and Secret (usually not needed - auto-fetched).
+
+Passing `--email` explicitly forces a fresh password login, even when a valid
+token for the same email is already saved.
+
+Diagnose authentication state:
+
+```bash
+./qobuz-dl-go auth doctor
+./qobuz-dl-go auth doctor --json
+```
+
+`auth doctor` is read-only: it does not submit a password or rewrite
+`account.json`.
 
 ## 9. Auto Update
 

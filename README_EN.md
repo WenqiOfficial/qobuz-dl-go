@@ -30,7 +30,8 @@ This project supports CLI (Command Line Interface) mode and has Web service mode
     *   Local credential caching (`account.json`).
     *   `--nosave` option for privacy.
 *   **🌐 Network Support**: Full HTTP / HTTPS / SOCKS5 proxy support.
-*   **🚀 CDN Acceleration**: Built-in CDN proxy for optimized access in China (can be disabled with `--nocdn`).
+*   **🚀 CDN Acceleration**: Built-in CDN proxy for optimized access in China (can be disabled with `--nocdn` or `--noproxy`).
+*   **🩺 Authentication Diagnostics**: `auth doctor` checks App ID, Secret, and token without printing sensitive values.
 
 ## 🛠️ Installation & Build
 
@@ -64,6 +65,9 @@ Quick Start:
 # Search and download
 ./qobuz-dl-go search "Mili"
 
+# Diagnose authentication
+./qobuz-dl-go auth doctor
+
 # View help
 ./qobuz-dl-go --help
 ```
@@ -72,7 +76,7 @@ Quick Start:
 
 The program generates the following files in the same directory:
 
-*   `account.json`: Stores encrypted user credentials (Token, UserID, etc.).
+*   `account.json`: Stores locally obfuscated user credentials (Token, UserID, etc.).
 *   `config.json`: (Planned) For storing default download path, quality preferences, and other global settings.
 
 ## ⚠️ Disclaimer

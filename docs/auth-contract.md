@@ -5,6 +5,30 @@ the user token issued while using that App ID. A saved token records its issuing
 App ID. Replacing the App ID invalidates the saved token unless the user
 explicitly supplies `--app-id` to pin the pair.
 
+## Implementation
+
+`internal/auth.Manager` owns the credential and login sequence. The CLI is a
+thin adapter: `setupClient` maps flags to `auth.Options`, calls `Prepare()`, and
+uses the returned API client and account. `auth doctor` uses
+`PrepareDiagnostics()` and `ValidateUserToken()`, which prepare and validate
+credentials without logging in or writing `account.json`.
+
+`Manager` exposes its furthest successful stage:
+
+| State | Meaning |
+| --- | --- |
+| `new` | No account or credential work has started. |
+| `account_loaded` | The persisted account was loaded (or initialized empty). |
+| `app_credentials_ready` | An App ID/Secret pair exists and an API client was created. |
+| `secret_valid` | Secret validation classified the pair as valid. |
+| `token_valid` | An existing token passed `user/login` validation. |
+| `authenticated` | A fresh password login succeeded. |
+| `unauthenticated` | The server started without a user token. |
+
+Tests inject account storage, secret discovery, client construction, and sleep
+through `auth.Dependencies`, so the state machine is verified without network
+or filesystem side effects.
+
 ## When checks run
 
 - `dl` and `search` initialize app credentials, validate the selected secret,
